@@ -1,0 +1,14 @@
+Evaluatee Type: faculty
+Evaluatee ID: 15100133
+POST Data: Array
+(
+    [evaluatee_id] => 15100133
+    [semester] => 1st Sem
+    [section] => 
+    [course_id] => 
+    [evaluation_type] => programheadtofaculty
+    [questionnaire_id] => 16
+    [evaluatee_type] => faculty
+    [q32] => Yes
+    [comments] => qwe
+)
