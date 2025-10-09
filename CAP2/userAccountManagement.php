@@ -302,7 +302,7 @@ $per_page = 10;
 $offset = ($page - 1) * $per_page;
 
 // Build WHERE clause
-$where = "WHERE 1=1";
+$where = "WHERE 1=1";   
 $params = [];
 $types = '';
 if ($search) {
@@ -354,11 +354,18 @@ $sql = "SELECT
     f.department_id AS faculty_department_id,
     f.program_id AS faculty_program_id,
     d.department_name AS faculty_department,
-    p.program_name AS faculty_program
+    p.program_name AS faculty_program,
+    s.first_name AS staff_first_name,
+    s.middle_name AS staff_middle_name,
+    s.last_name AS staff_last_name,
+    s.department_id AS staff_department_id,
+    ds.department_name AS staff_department
 FROM users u
 LEFT JOIN faculty f ON u.id = f.user_id
 LEFT JOIN departments d ON f.department_id = d.id
 LEFT JOIN programs p ON f.program_id = p.program_id
+LEFT JOIN staff s ON u.id = s.user_id
+LEFT JOIN departments ds ON s.department_id = ds.id
 $where ORDER BY $sort $order LIMIT ? OFFSET ?";
 $bind_params = $params;
 $bind_types = $types . 'ii';
@@ -383,17 +390,35 @@ $stmt->bind_result(
     $faculty_department_id,
     $faculty_program_id,
     $faculty_department,
-    $faculty_program
+    $faculty_program,
+    $staff_first_name,
+    $staff_middle_name,
+    $staff_last_name,
+    $staff_department_id,
+    $staff_department
 );
 
 $users = [];
 while ($stmt->fetch()) {
-    $first_name = $faculty_first_name ?: $user_first_name ?: '';
-    $middle_name = $faculty_middle_name ?: $user_middle_name ?: '';
-    $last_name = $faculty_last_name ?: $user_last_name ?: '';
+    $first_name = $faculty_first_name ?: $staff_first_name ?: $user_first_name ?: '';
+    $middle_name = $faculty_middle_name ?: $staff_middle_name ?: $user_middle_name ?: '';
+    $last_name = $faculty_last_name ?: $staff_last_name ?: $user_last_name ?: '';
     if (!$first_name && !$last_name) {
         $first_name = $userName;
     }
+
+    // Choose department/program based on role
+    if (in_array($role, ['Faculty', 'Program Head'])) {
+        $department = $faculty_department ?: '';
+        $program = $faculty_program ?: '';
+    } elseif (in_array($role, ['Staff', 'Head Staff', 'HR'])) {
+        $department = $staff_department ?: '';
+        $program = ''; // Staff do not have a program
+    } else {
+        $department = '';
+        $program = '';
+    }
+
     $users[] = [
         'id' => $id,
         'first_name' => $first_name,
@@ -405,8 +430,8 @@ while ($stmt->fetch()) {
         'status' => $status,
         'display_status' => $status,
         'created_at' => $created_at,
-        'department' => $faculty_department ?: '',
-        'program' => $faculty_program ?: ''
+        'department' => $department,
+        'program' => $program
     ];
 }
 $stmt->close();
@@ -429,6 +454,13 @@ function userTypeBadge($type)
 function statusBadge($type, $status)
 {
     return $status === 'Active' ? 'bg-[#dbeafe] text-[#2563eb]' : 'bg-gray-200 text-gray-600';
+}
+?>
+
+<?php
+// Helper function for consistent capitalization
+function formatLabel($text) {
+    return ucwords(strtolower($text ?? ''));
 }
 ?>
 <!DOCTYPE html>
@@ -500,13 +532,12 @@ function statusBadge($type, $status)
         }
     </style>
 </head>
-
-<body class="bg-[#f4f6fa] min-h-screen overflow-hidden">
+<main class="p-10 fade max-w-[1800px] mx-auto mb-[10rem]">
     <!-- Main Layout -->
     <div class="flex flex-col lg:flex-row max-w-[1800px] mx-auto py-10 px-2 gap-8 min-h-screen">
         <!-- Sidebar: Filters & Quick Actions -->
-        <aside class="w-full lg:w-[340px] flex-shrink-0 mb-8 lg:mb-0">
-            <div class="bg-white rounded-2xl shadow p-8 mb-8">
+        <aside class="w-full lg:w-[340px] flex-shrink-0 mb-8 lg:mb-8">
+            <div class="bg-white rounded-2xl shadow p-8 mt-20">
                 <h2 class="text-xl font-bold text-[#467C4F] mb-6">Filter</h2>
                 <form method="get" class="space-y-4">
                     <input type="text" name="search" value="<?= h($search) ?>" placeholder="Search by name or username"
@@ -530,7 +561,7 @@ function statusBadge($type, $status)
                         class="w-full bg-[#467C4F] text-white rounded px-4 py-3 mt-2 text-base font-semibold hover:bg-[#2563eb] transition">Apply</button>
                 </form>
             </div>
-            <div class="bg-white rounded-2xl shadow p-8">
+            <div class="bg-white rounded-2xl shadow p-8 mt-7">
                 <h2 class="text-xl font-bold text-[#467C4F] mb-6">Quick Actions</h2>
                 <button onclick="showAddModal()"
                     class="w-full bg-[#2563eb] text-white rounded px-4 py-3 text-base font-semibold hover:bg-[#1746a2] transition">
@@ -540,10 +571,11 @@ function statusBadge($type, $status)
         </aside>
 
         <!-- Main Panel: User Account Management -->
-        <main class="flex-1 w-full">
-            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8 gap-2">
-                <h1 class="text-3xl font-bold text-[#467C4F]">User Account Management</h1>
-            </div>
+        <main class="flex-1 w-full -mt-10">
+        <div class="flex flex-col sm:flex-row sm:items-start sm:justify-start mb-8 gap-2" 
+            style="margin-left: 12px; margin-right: 12px;">
+            <h1 class="text-3xl font-bold text-[#467C4F]">User Account Management</h1>
+        </div>
             <!-- Feedback -->
             <?php if ($feedback): ?>
                 <div
@@ -553,76 +585,76 @@ function statusBadge($type, $status)
             <?php endif; ?>
             <!-- Table -->
             <div class="bg-white rounded-2xl shadow overflow-x-auto" style="margin-left: 12px; margin-right: 12px;">
-                <table class="min-w-full divide-y divide-gray-200 text-base"
+                <table class="min-w-full divide-y divide-gray-200 text-base text-center"
                     style="border-radius: 18px; overflow: hidden;">
                     <thead class="bg-[#e6f7f1]">
                         <tr>
-                            <th class="px-6 py-4 font-semibold text-[#222] text-left">Full Name</th>
-                            <th class="px-6 py-4 font-semibold text-[#222] text-left">Username</th>
-                            <th class="px-6 py-4 font-semibold text-[#222] text-left">User Type</th>
-                            <th class="px-6 py-4 font-semibold text-[#222] text-left">Role</th>
-                            <th class="px-6 py-4 font-semibold text-[#222] text-left">Status</th>
-                            <th class="px-6 py-4 font-semibold text-[#222] text-left">Date Created</th>
-                            <th class="px-6 py-4 font-semibold text-[#222] text-left">Actions</th>
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">Full Name</th>
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">Username</th>
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">User Type</th>
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">Role</th>
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">Department</th>
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">Program</th>  
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">Status</th>
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">Date Created</th>
+                            <th class="px-6 py-4 font-semibold text-[#222] text-center">Actions</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-100">
                         <?php foreach ($users as $i => $u): ?>
-                            <tr class="<?= $i % 2 ? 'table-row-alt' : '' ?><?= $rowHighlightId == $u['id'] ? ' row-success' : '' ?>"
-                                id="row-<?= $u['id'] ?>">
-                                <td class="px-6 py-4">
-                                    <?= h(trim($u['first_name'] . ' ' . $u['middle_name'] . ' ' . $u['last_name'])) ?></td>
-                                <td class="px-6 py-4"><?= h($u['userName']) ?></td>
-                                <td class="px-6 py-4">
-                                    <span
-                                        class="inline-block px-3 py-1 rounded-full text-xs font-semibold <?= userTypeBadge($u['userType']) ?>">
-                                        <?= h($u['userType']) ?>
-                                    </span>
-                                </td>
-                                <td class="px-6 py-4"><?= h($u['role']) ?></td>
-                                <td class="px-6 py-4">
-                                    <span
-                                        class="inline-block px-3 py-1 rounded-full text-xs font-semibold <?= statusBadge($u['userType'], $u['display_status']) ?>">
-                                        <?= h($u['display_status']) ?>
-                                    </span>
-                                </td>
-                                <td class="px-6 py-4"><?= h(date('Y-m-d', strtotime($u['created_at']))) ?></td>
-                                <td class="px-6 py-4 flex gap-2 flex-wrap">
-                                    <button class="action-btn edit px-3 py-1 rounded" onclick="showEditModal(
-                                        <?= $u['id'] ?>,
-                                        '<?= h($u['first_name']) ?>',
-                                        '<?= h($u['middle_name']) ?>',
-                                        '<?= h($u['last_name']) ?>',
-                                        '<?= h($u['userName']) ?>',
-                                        '<?= h($u['userType']) ?>',
-                                        '<?= h($u['role']) ?>',
-                                        '<?= h($u['department'] ?? '') ?>',
-                                        '<?= h($u['program'] ?? '') ?>',
-                                        '<?= h($u['userName'] ?? '') ?>'
-                                    )">
-                                        <i class="fa fa-edit"></i>
-                                    </button>
-                                    <button class="action-btn reset px-3 py-1 rounded"
-                                        onclick="showResetModal(<?= $u['id'] ?>)">
-                                        <i class="fa fa-key"></i>
-                                    </button>
-                                    <?php
-                                    $toggleClass = $u['display_status'] == 'Active' ? 'toggle-active' : 'toggle-inactive';
-                                    ?>
-                                    <button class="action-btn <?= $toggleClass ?> px-3 py-1 rounded"
-                                        onclick="showToggleModal(<?= $u['id'] ?>, '<?= h($u['display_status']) ?>', '<?= h($u['userType']) ?>')">
-                                        <i
-                                            class="fa <?= ($u['display_status'] == 'Active' ? 'fa-toggle-on' : 'fa-toggle-off') ?>"></i>
-                                    </button>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                        <?php if (empty($users)): ?>
-                            <tr>
-                                <td colspan="7" class="text-center text-gray-400 py-8">No users found.</td>
-                            </tr>
-                        <?php endif; ?>
-                    </tbody>
+        <tr class="<?= $i % 2 ? 'table-row-alt' : '' ?><?= $rowHighlightId == $u['id'] ? ' row-success' : '' ?>"
+            id="row-<?= $u['id'] ?>">
+            <td class="px-6 py-4"><?= formatLabel(trim($u['first_name'] . ' ' . $u['middle_name'] . ' ' . $u['last_name'])) ?></td>
+            <td class="px-6 py-4"><?= h($u['userName']) ?></td>
+            <td class="px-6 py-4">
+            <span class="inline-block px-3 py-1 rounded-full text-xs font-semibold <?= userTypeBadge($u['userType']) ?>">
+                <?= h($u['userType']) ?>
+            </span>
+            </td>
+            <td class="px-6 py-4"><?= h($u['role']) ?></td>
+            <td class="px-6 py-4"><?= h($u['department']) ?></td>
+            <td class="px-6 py-4"><?= h($u['program']) ?></td>
+            <td class="px-6 py-4">
+            <span class="inline-block px-3 py-1 rounded-full text-xs font-semibold <?= statusBadge($u['userType'], $u['display_status']) ?>">
+                <?= h($u['display_status']) ?>
+            </span>
+            </td>
+            <td class="px-6 py-4"><?= h(date('Y-m-d', strtotime($u['created_at']))) ?></td>
+            <td class="px-6 py-4 flex gap-1 flex-nowrap justify-center items-center">
+            <button class="action-btn edit px-2 py-1 rounded text-xs" title="Edit" onclick="showEditModal(
+                <?= $u['id'] ?>,
+                '<?= h($u['first_name']) ?>',
+                '<?= h($u['middle_name']) ?>',
+                '<?= h($u['last_name']) ?>',
+                '<?= h($u['userName']) ?>',
+                '<?= h($u['userType']) ?>',
+                '<?= h($u['role']) ?>',
+                '<?= h($u['department'] ?? '') ?>',
+                '<?= h($u['program'] ?? '') ?>',
+                '<?= h($u['userName'] ?? '') ?>'
+            )">
+                <i class="fa fa-edit"></i>
+            </button>
+            <button class="action-btn reset px-2 py-1 rounded text-xs" title="Reset Password"
+                onclick="showResetModal(<?= $u['id'] ?>)">
+                <i class="fa fa-key"></i>
+            </button>
+            <?php
+            $toggleClass = $u['display_status'] == 'Active' ? 'toggle-active' : 'toggle-inactive';
+            ?>
+            <button class="action-btn <?= $toggleClass ?> px-2 py-1 rounded text-xs" title="Toggle Status"
+                onclick="showToggleModal(<?= $u['id'] ?>, '<?= h($u['display_status']) ?>', '<?= h($u['userType']) ?>')">
+                <i class="fa <?= ($u['display_status'] == 'Active' ? 'fa-toggle-on' : 'fa-toggle-off') ?>"></i>
+            </button>
+            </td>
+        </tr>
+    <?php endforeach; ?>
+    <?php if (empty($users)): ?>
+        <tr>
+            <td colspan="9" class="text-center text-gray-400 py-8">No users found.</td>
+        </tr>
+    <?php endif; ?>
+</tbody>
                 </table>
             </div>
             <!-- Pagination -->
@@ -1199,11 +1231,18 @@ function statusBadge($type, $status)
                 deptSelect.required = true;
                 progSelect.required = false;
                 progSelect.value = '';
-            } else {
+            } else if (role === 'Faculty' || role === 'Program Head') {
                 deptDiv.style.display = '';
                 progDiv.style.display = '';
                 deptSelect.required = true;
                 progSelect.required = true;
+            } else {
+                deptDiv.style.display = 'none';
+                progDiv.style.display = 'none';
+                deptSelect.required = false;
+                progSelect.required = false;
+                deptSelect.value = '';
+                progSelect.value = '';
             }
         });
         document.getElementById('edit_userType').addEventListener('change', toggleEditStatusFields);
