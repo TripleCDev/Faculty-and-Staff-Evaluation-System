@@ -101,19 +101,21 @@ if (strtolower($userType) === 'admin') {
 // 9. Insert per-question answers into evaluation_responses (new schema)
 $evaluator_type = $_SESSION['role'] ?? 'Faculty';
 
-function mapRoleToEnum($role) {
-    $role = strtolower(trim($role));
-    switch ($role) {
-        case 'faculty': return 'Faculty';
-        case 'staff': return 'Staff';
-        case 'head staff': return 'Head Staff';
-        case 'program head': return 'Program Head';
-        case 'hr': return 'HR';
-        default: return 'Faculty';
+// Map evaluation_type for DB storage
+function mapEvaluationType($type) {
+    $type = strtolower(trim($type));
+    switch ($type) {
+        case 'self': return 'Self';
+        case 'hrtofaculty': return 'HRtoFaculty';
+        case 'hrtostaff': return 'HRtoStaff';
+        case 'programheadtofaculty': return 'ProgramHeadToFaculty';
+        case 'facultypeer': return 'FacultyPeer';
+        case 'headtostaff': return 'HeadToStaff';
+        case 'staffpeer': return 'StaffPeer';
+        default: return 'Self';
     }
 }
-
-$evaluated_type = mapRoleToEnum($evaluatee_type);
+$db_evaluation_type = mapEvaluationType($evaluation_type);
 
 // STEP 1: Generate a new evaluation_id
 $eval_query = "SELECT IFNULL(MAX(evaluation_id), 0) + 1 AS next_id FROM evaluation_responses";
@@ -124,7 +126,7 @@ $evaluation_id = $row['next_id'];
 foreach ($responses as $question_id => $answer) {
     // Extract the option text before the '(' if present
     $option_key = trim(preg_replace('/\s*\(.*\)$/', '', $answer));
-    $option_point = isset($optionPointsMap[$option_key]) ? $optionPointsMap[$option_key] : 0;
+    $option_point = $optionPointsMap[$option_key] ?? 0;
 
     $resp_stmt = $conn->prepare(
         "INSERT INTO evaluation_responses (
@@ -162,8 +164,18 @@ $conn->close();
 // 10. Redirect to thank you page
 if (strtolower($userType) === 'admin') {
     header("Location: thankyou.php?type=admin&redirect=adminEvaluation.php");
-} else {
+} elseif (strtolower($db_evaluation_type) === 'hrtofaculty' || strtolower($db_evaluation_type) === 'hrtostaff') {
+    header("Location: thankyou.php?type=hr&redirect=regularDashboard.php");
+} elseif (strtolower($db_evaluation_type) === 'facultypeer') {
     header("Location: thankyou.php?type=peer&redirect=regularDashboard.php");
+} elseif (strtolower($db_evaluation_type) === 'staffpeer') {
+    header("Location: thankyou.php?type=staffpeer&redirect=regularDashboard.php");
+} elseif (strtolower($db_evaluation_type) === 'programheadtofaculty') {
+    header("Location: thankyou.php?type=programhead&redirect=regularDashboard.php");
+} elseif (strtolower($db_evaluation_type) === 'headtostaff') {
+    header("Location: thankyou.php?type=headtostaff&redirect=regularDashboard.php");
+} else {
+    header("Location: thankyou.php?type=self&redirect=regularDashboard.php");
 }
 exit;
 ?>
