@@ -182,7 +182,7 @@ function get_eval_answers($conn, $evaluation_id) {
                 // Merge all evaluations into one array with a type label
                 $all_evals = [];
                 foreach ($admin_evals_data as $eval) {
-                    $eval['eval_type'] = 'Admin';
+                    $eval['eval_type'] = 'Other';
                     $all_evals[] = $eval;
                 }
                 foreach ($other_evals_data as $eval) {
@@ -272,7 +272,7 @@ function get_eval_answers($conn, $evaluation_id) {
         </div>
         <div class="flex justify-end mt-8">
             <a href="facultySection.php" class="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold shadow transition">
-                Back to Faculty List
+                Back to Faculty and Staff List
             </a>
         </div>
     </main>
