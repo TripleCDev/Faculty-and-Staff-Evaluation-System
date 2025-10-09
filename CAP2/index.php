@@ -241,7 +241,7 @@ while ($row = $res->fetch_assoc()) {
         </div>
         <div>
             <div class="login-title">The College of Maasin</div>
-            <div class="login-subtitle">Faculty & Staff Evaluation Portal</div>
+            <div class="login-subtitle">Faculty & Staff Evaluation System</div>
         </div>
         <form id="loginForm" class="login-form" autocomplete="off" action="login_handler.php" method="POST">
             <label for="username">Username / User ID</label>
