@@ -51,7 +51,8 @@ while ($row = $qres->fetch_assoc()) {
 // --- FACULTY RANKING ---
 $sql = "
 SELECT 
-    f.id AS faculty_id,
+    f.id,
+    f.faculty_id,
     CONCAT(f.first_name, ' ', f.last_name) AS faculty_name,
     d.department_name
 FROM faculty f
@@ -62,7 +63,7 @@ $result = $conn->query($sql);
 
 $facultyList = [];
 while ($row = $result->fetch_assoc()) {
-    $faculty_id = $row['faculty_id'];
+    $faculty_eval_id = $row['faculty_id']; // Use faculty_id for evaluation matching
     $curriculum_where = '';
     if ($curriculum_filter) {
         $curriculum_id = intval($curriculum_filter);
@@ -70,18 +71,20 @@ while ($row = $result->fetch_assoc()) {
     }
 
     $eval_sql = "
-        SELECT 
-            qa.evaluation_type,
-            q.weight_percentage,
-            AVG(er.score) as avg_score
-        FROM evaluation_responses er
-        INNER JOIN questionnaires q ON er.questionnaire_id = q.id
-        INNER JOIN questionnaire_assignments qa ON er.questionnaire_id = qa.questionnaire_id
-        WHERE er.evaluated_id = $faculty_id
-          AND er.status = 'completed'
-          $curriculum_where
-        GROUP BY qa.evaluation_type, q.weight_percentage
-    ";
+    SELECT 
+        qa.evaluation_type,
+        q.weight_percentage,
+        AVG(er.score) as avg_score
+    FROM evaluation_responses er
+    INNER JOIN questionnaires q ON er.questionnaire_id = q.id
+    INNER JOIN questionnaire_assignments qa 
+        ON er.questionnaire_id = qa.questionnaire_id
+    WHERE er.evaluated_id = $faculty_eval_id
+      AND er.status = 'completed'
+      $curriculum_where
+      AND qa.evaluation_type IN ('FACULTYPEER', 'Self')
+    GROUP BY qa.evaluation_type, q.weight_percentage
+";
     $evals = $conn->query($eval_sql);
 
     $scores = [];
@@ -107,7 +110,7 @@ while ($row = $result->fetch_assoc()) {
 // --- STAFF RANKING ---
 $sql_staff = "
 SELECT 
-    s.id AS staff_id,
+    s.staff_id,
     CONCAT(s.first_name, ' ', s.last_name) AS staff_name,
     d.department_name
 FROM staff s
@@ -119,7 +122,7 @@ $result_staff = $conn->query($sql_staff);
 
 $staffList = [];
 while ($row = $result_staff->fetch_assoc()) {
-    $staff_id = $row['staff_id'];
+    $staff_eval_id = $row['staff_id']; // Now this is staff.staff_id, matching users.id and evaluation_responses.evaluated_id
     $curriculum_where = '';
     if ($curriculum_filter) {
         $curriculum_id = intval($curriculum_filter);
@@ -132,11 +135,12 @@ while ($row = $result_staff->fetch_assoc()) {
             AVG(er.score) as avg_score
         FROM evaluation_responses er
         INNER JOIN questionnaires q ON er.questionnaire_id = q.id
-        INNER JOIN questionnaire_assignments qa ON er.questionnaire_id = qa.questionnaire_id
-        WHERE er.evaluated_id = $staff_id
-          AND er.status = 'completed'
-          $curriculum_where
-        GROUP BY qa.evaluation_type, q.weight_percentage
+        INNER JOIN questionnaire_assignments qa 
+            ON er.questionnaire_id = qa.questionnaire_id
+    WHERE er.evaluated_id = $staff_eval_id
+      AND er.status = 'completed'
+      $curriculum_where
+    GROUP BY qa.evaluation_type, q.weight_percentage
     ";
     $evals = $conn->query($eval_sql);
 
@@ -217,7 +221,7 @@ while ($row = $cur_res->fetch_assoc()) {
         .table-responsive { max-width: 100vw; overflow-x: auto; }
     </style>
 </head>
-<body class="bg-[#f4f6fa] min-h-screen mb-[10rem]">
+<main class="p-10 fade max-w-[1800px] mx-auto mb-[10rem]">
     <div class="w-full max-w-[1800px] mx-auto px-2 sm:px-6 py-8 flex flex-col min-h-screen">
         <?php
         if ($curriculum_filter && isset($curriculum_options[$curriculum_filter])) {
@@ -231,7 +235,7 @@ while ($row = $cur_res->fetch_assoc()) {
             }
         }
         ?>
-        <h1 class="text-3xl sm:text-4xl font-bold text-green-900 mb-4">
+        <h1 class="text-3xl font-bold text-[#467C4F] mb-6 sm:text-4xl  text-green-700 mb-4">
             Faculty & Staff Rankings
         </h1>
         <div class="flex flex-col md:flex-row md:items-end gap-4 mb-8">
@@ -300,10 +304,16 @@ while ($row = $cur_res->fetch_assoc()) {
                     ?>
                     <tr class="hover:bg-green-50 <?= $rowClass ?>">
                         <td class="px-6 py-4 font-bold text-center"><?= $f['rank'] ?></td>
-                        <td class="px-6 py-4 text-center"><?= htmlspecialchars($f['faculty_name']) ?></td>
-                        <td class="px-6 py-4 text-center"><?= htmlspecialchars($f['department_name']) ?></td>
+                        <td class="px-6 py-4 text-center">
+                            <?= htmlspecialchars(ucwords(strtolower($f['faculty_name']))) ?>
+                        </td>
+                        <td class="px-6 py-4 text-center">
+                            <?= htmlspecialchars(ucwords(strtolower($f['department_name']))) ?>
+                        </td>
                         <?php foreach ($eval_types as $type => $weight): ?>
-                            <td class="px-6 py-4 text-center"><?= isset($f['scores'][$type]) ? number_format($f['scores'][$type], 2) : '-' ?></td>
+                            <td class="px-6 py-4 text-center">
+                                <?= isset($f['scores'][$type]) ? number_format($f['scores'][$type], 2) : '-' ?>
+                            </td>
                         <?php endforeach; ?>
                         <td class="px-6 py-4 font-bold text-green-800 text-center"><?= number_format($f['final_score'], 2) ?></td>
                     </tr>
@@ -319,3 +329,4 @@ while ($row = $cur_res->fetch_assoc()) {
 <?php
 $conn->close();
 ?>
+<pre><?php print_r($f['scores']); ?></pre>
