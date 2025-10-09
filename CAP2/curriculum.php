@@ -1,14 +1,14 @@
 <?php
 require_once 'config.php';
 session_start();
-function flash($key) {
-    if (!empty($_SESSION[$key])) {
-        $msg = $_SESSION[$key];
-        unset($_SESSION[$key]);
-        return $msg;
-    }
-    return '';
+
+// Helper function for consistent capitalization
+function formatLabel($text) {
+    return ucwords(strtolower($text ?? ''));
 }
+
+// Set timezone for Philippine time
+date_default_timezone_set('Asia/Manila');
 
 // --- Handle Add Curriculum ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_curriculum'])) {
@@ -222,7 +222,7 @@ if ($selected_curriculum_id && isset($evaluation_stats[$selected_curriculum_id])
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Curriculum Management Dashboard</title>
+    <title><?= formatLabel('Curriculum Management Dashboard') ?></title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" />
@@ -265,16 +265,16 @@ if ($selected_curriculum_id && isset($evaluation_stats[$selected_curriculum_id])
             <!-- Curriculum List Section -->
             <section>
                 <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <i class="fa-solid fa-book text-blue-600"></i> Curriculum List
+                    <i class="fa-solid fa-book text-blue-600"></i> <?= formatLabel('Curriculum List') ?>
                 </h2>
-                <!-- Filter/Search Bar for Curriculum (moved before the cards) -->
+                <!-- Filter/Search Bar for Curriculum -->
                 <div class="mb-6">
                     <form method="get" class="flex flex-wrap gap-2 items-center w-full md:w-auto">
                         <select name="filter_curriculum" id="filter_curriculum" class="border rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-200" title="Filter by Curriculum" onchange="this.form.submit()">
-                            <option value="">All Curriculums</option>
+                            <option value=""><?= formatLabel('All Curriculums') ?></option>
                             <?php foreach ($curriculum as $cur): ?>
                                 <option value="<?= $cur['curriculum_id'] ?>" <?= $selected_curriculum_id == $cur['curriculum_id'] ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($cur['curriculum_title']) ?> (<?= $cur['curriculum_year_start'] ?>-<?= $cur['curriculum_year_end'] ?> <?= $cur['semester'] ?>)
+                                    <?= formatLabel($cur['curriculum_title']) ?> (<?= $cur['curriculum_year_start'] ?>-<?= $cur['curriculum_year_end'] ?> <?= formatLabel($cur['semester']) ?>)
                                 </option>
                             <?php endforeach; ?>
                         </select>
@@ -286,54 +286,54 @@ if ($selected_curriculum_id && isset($evaluation_stats[$selected_curriculum_id])
                             <!-- Edit Button -->
                             <button type="button"
                                 class="absolute top-4 right-4 bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded text-xs shadow z-10 transition"
-                                title="Edit Curriculum"
+                                title="<?= formatLabel('Edit Curriculum') ?>"
                                 onclick="openEditModal(
                                     <?= $cur['curriculum_id'] ?>,
-                                    '<?= htmlspecialchars(addslashes($cur['curriculum_title'])) ?>',
+                                    '<?= addslashes(formatLabel($cur['curriculum_title'])) ?>',
                                     '<?= $cur['curriculum_year_start'] ?>',
                                     '<?= $cur['curriculum_year_end'] ?>',
-                                    `<?= htmlspecialchars(addslashes($cur['description'] ?? '')) ?>`,
+                                    `<?= addslashes(formatLabel($cur['description'] ?? '')) ?>`,
                                     '<?= $cur['status'] ?>',
-                                    '<?= $cur['semester'] ?>'
+                                    '<?= formatLabel($cur['semester']) ?>'
                                 )">
                                 <i class="fa fa-edit"></i>
                             </button>
                             <div class="flex items-center gap-2 flex-wrap">
-                                <span class="font-bold text-lg text-gray-900"><?= htmlspecialchars($cur['curriculum_title']) ?></span>
+                                <span class="font-bold text-lg text-gray-900"><?= formatLabel($cur['curriculum_title']) ?></span>
                                 <form method="get" action="curriculum.php" class="inline">
                                     <input type="hidden" name="toggle" value="<?= $cur['curriculum_id'] ?>">
                                     <?php if ($cur['status'] === 'active'): ?>
                                         <button type="submit"
                                             class="ml-2 badge badge-green flex items-center gap-1 hover:opacity-80 transition"
-                                            title="Click to set Inactive">
+                                            title="<?= formatLabel('Click to set Inactive') ?>">
                                             <i class="fa fa-check-circle"></i>
-                                            Active
+                                            <?= formatLabel('Active') ?>
                                         </button>
                                     <?php else: ?>
                                         <button type="submit"
                                             class="ml-2 badge badge-red flex items-center gap-1 hover:opacity-80 transition"
-                                            title="Click to set Active">
+                                            title="<?= formatLabel('Click to set Active') ?>">
                                             <i class="fa fa-ban"></i>
-                                            Inactive
+                                            <?= formatLabel('Inactive') ?>
                                         </button>
                                     <?php endif; ?>
                                 </form>
                             </div>
                             <div class="flex items-center gap-2 text-sm text-gray-600">
                                 <i class="fa-solid fa-calendar-days"></i>
-                                <?= htmlspecialchars($cur['curriculum_year_start']) ?> - <?= htmlspecialchars($cur['curriculum_year_end']) ?>
-                                <span class="badge badge-blue ml-2 bg-blue-100 text-blue-700"><?= htmlspecialchars($cur['semester']) ?> Semester</span>
+                                <?= $cur['curriculum_year_start'] ?> - <?= $cur['curriculum_year_end'] ?>
+                                <span class="badge badge-blue ml-2 bg-blue-100 text-blue-700"><?= formatLabel($cur['semester']) ?> <?= formatLabel('Semester') ?></span>
                             </div>
                             <?php if (!empty($cur['description'])): ?>
-                                <div class="text-sm text-gray-700"><?= nl2br(htmlspecialchars($cur['description'])) ?></div>
+                                <div class="text-sm text-gray-700"><?= formatLabel($cur['description']) ?></div>
                             <?php endif; ?>
                             <div class="flex items-center gap-2 text-xs text-gray-400">
-                                <i class="fa-regular fa-clock"></i> Created: <?= htmlspecialchars($cur['date_created']) ?>
+                                <i class="fa-regular fa-clock"></i> <?= formatLabel('Created') ?>: <?= date('F d, Y', strtotime($cur['date_created'])) ?>
                             </div>
                             <div class="text-xs text-blue-700 font-semibold mt-2">
                                 <?= isset($evaluation_stats[$cur['curriculum_id']]) && $evaluation_stats[$cur['curriculum_id']]['eval_count'] > 0
-                                    ? $evaluation_stats[$cur['curriculum_id']]['eval_count'] . ' Evaluation(s) linked'
-                                    : 'No evaluations yet' ?>
+                                    ? $evaluation_stats[$cur['curriculum_id']]['eval_count'] . ' ' . formatLabel('Evaluation(s) linked')
+                                    : formatLabel('No evaluations yet') ?>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -367,26 +367,34 @@ if ($selected_curriculum_id && isset($evaluation_stats[$selected_curriculum_id])
                     <table class="min-w-full bg-white rounded-xl table">
                         <thead>
                             <tr class="bg-gray-100">
-                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700">Evaluation ID</th>
-                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700">Questionnaire Title</th>
-                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700">Evaluated Person</th>
-                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700">Score</th>
-                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700">Date</th>
+                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700"><?= formatLabel('Evaluation ID') ?></th>
+                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700"><?= formatLabel('Questionnaire Title') ?></th>
+                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700"><?= formatLabel('Evaluated Person') ?></th>
+                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700"><?= formatLabel('Score') ?></th>
+                                <th class="px-4 py-2 border-b text-left text-sm font-semibold text-gray-700"><?= formatLabel('Date') ?></th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php foreach ($filtered_evaluations as $i => $ev): ?>
                                 <tr class="<?= $i % 2 === 0 ? 'bg-white' : 'bg-gray-50' ?> hover:bg-blue-50 transition">
                                     <td class="px-4 py-2 border-b"><?= htmlspecialchars($ev['evaluation_id']) ?></td>
-                                    <td class="px-4 py-2 border-b"><?= htmlspecialchars($ev['questionnaire_title']) ?></td>
-                                    <td class="px-4 py-2 border-b"><?= htmlspecialchars($ev['evaluated_fullname']) ?></td>
+                                    <td class="px-4 py-2 border-b"><?= formatLabel($ev['questionnaire_title']) ?></td>
+                                    <td class="px-4 py-2 border-b"><?= formatLabel($ev['evaluated_fullname']) ?></td>
                                     <td class="px-4 py-2 border-b"><?= htmlspecialchars($ev['score']) ?></td>
-                                    <td class="px-4 py-2 border-b"><?= htmlspecialchars($ev['evaluated_date']) ?></td>
+                                    <td class="px-4 py-2 border-b">
+                                        <?php
+                                        if (!empty($ev['evaluated_date'])) {
+                                            echo date("F d, Y h:i A", strtotime($ev['evaluated_date']));
+                                        } else {
+                                            echo 'N/A';
+                                        }
+                                        ?>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                             <?php if (empty($filtered_evaluations)): ?>
                                 <tr>
-                                    <td colspan="5" class="text-center text-gray-400 py-8">No evaluation responses found.</td>
+                                    <td colspan="5" class="text-center text-gray-400 py-8"><?= formatLabel('No evaluation responses found.') ?></td>
                                 </tr>
                             <?php endif; ?>
                         </tbody>
@@ -412,41 +420,41 @@ if ($selected_curriculum_id && isset($evaluation_stats[$selected_curriculum_id])
         <div class="bg-white rounded-lg shadow-lg p-8 modal-card relative w-full max-w-md">
             <button onclick="closeEditModal()" class="absolute top-2 right-3 text-gray-400 hover:text-gray-700 text-xl">&times;</button>
             <h2 class="text-lg font-bold mb-4 flex items-center gap-2">
-                <i class="fa-solid fa-pen-to-square text-blue-600"></i> Edit Curriculum
+                <i class="fa-solid fa-pen-to-square text-blue-600"></i> <?= formatLabel('Edit Curriculum') ?>
             </h2>
             <form method="POST" class="flex flex-col gap-4">
                 <input type="hidden" name="edit_curriculum" value="1">
                 <input type="hidden" name="curriculum_id" id="edit_curriculum_id">
-                <label class="font-semibold">Title <span class="text-red-500">*</span></label>
+                <label class="font-semibold"><?= formatLabel('Title') ?> <span class="text-red-500">*</span></label>
                 <input type="text" name="curriculum_title" id="edit_curriculum_title" class="border rounded px-3 py-2 w-full" required>
                 <div class="flex gap-2">
                     <div class="flex-1">
-                        <label class="font-semibold">Year Start <span class="text-red-500">*</span></label>
+                        <label class="font-semibold"><?= formatLabel('Year Start') ?> <span class="text-red-500">*</span></label>
                         <input type="number" name="curriculum_year_start" id="edit_curriculum_year_start" min="2000" max="2100" class="border rounded px-3 py-2 w-full" required>
                     </div>
                     <div class="flex-1">
-                        <label class="font-semibold">Year End <span class="text-red-500">*</span></label>
+                        <label class="font-semibold"><?= formatLabel('Year End') ?> <span class="text-red-500">*</span></label>
                         <input type="number" name="curriculum_year_end" id="edit_curriculum_year_end" min="2000" max="2100" class="border rounded px-3 py-2 w-full" required>
                     </div>
                 </div>
                 <div>
-                    <label class="font-semibold">Semester <span class="text-red-500">*</span></label>
+                    <label class="font-semibold"><?= formatLabel('Semester') ?> <span class="text-red-500">*</span></label>
                     <select name="semester" id="edit_semester" class="border rounded px-3 py-2 w-full" required>
-                        <option value="1st">1st</option>
-                        <option value="2nd">2nd</option>
-                        <option value="Summer">Summer</option>
+                        <option value="1st"><?= formatLabel('1st') ?></option>
+                        <option value="2nd"><?= formatLabel('2nd') ?></option>
+                        <option value="Summer"><?= formatLabel('Summer') ?></option>
                     </select>
                 </div>
-                <label class="font-semibold">Description</label>
+                <label class="font-semibold"><?= formatLabel('Description') ?></label>
                 <textarea name="description" id="edit_description" class="border rounded px-3 py-2 w-full" rows="2"></textarea>
                 <div>
-                    <label class="font-semibold">Status</label>
+                    <label class="font-semibold"><?= formatLabel('Status') ?></label>
                     <select name="status" id="edit_status" class="border rounded px-3 py-2 w-full">
-                        <option value="active">Active</option>
-                        <option value="inactive">Inactive</option>
+                        <option value="active"><?= formatLabel('Active') ?></option>
+                        <option value="inactive"><?= formatLabel('Inactive') ?></option>
                     </select>
                 </div>
-                <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 mt-2 transition">Save Changes</button>
+                <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 mt-2 transition"><?= formatLabel('Save Changes') ?></button>
             </form>
         </div>
     </div>
@@ -456,33 +464,33 @@ if ($selected_curriculum_id && isset($evaluation_stats[$selected_curriculum_id])
         <div class="bg-white rounded-lg shadow-lg p-8 modal-card relative w-full max-w-md">
             <button onclick="closeAddModal()" class="absolute top-2 right-3 text-gray-400 hover:text-gray-700 text-xl">&times;</button>
             <h2 class="text-lg font-bold mb-4 flex items-center gap-2">
-                <i class="fa-solid fa-plus text-blue-600"></i> Add Curriculum
+                <i class="fa-solid fa-plus text-blue-600"></i> <?= formatLabel('Add Curriculum') ?>
             </h2>
             <form method="POST" class="flex flex-col gap-4">
                 <input type="hidden" name="add_curriculum" value="1">
-                <label class="font-semibold">Title <span class="text-red-500">*</span></label>
+                <label class="font-semibold"><?= formatLabel('Title') ?> <span class="text-red-500">*</span></label>
                 <input type="text" name="curriculum_title" class="border rounded px-3 py-2 w-full" required>
                 <div class="flex gap-2">
                     <div class="flex-1">
-                        <label class="font-semibold">Year Start <span class="text-red-500">*</span></label>
+                        <label class="font-semibold"><?= formatLabel('Year Start') ?> <span class="text-red-500">*</span></label>
                         <input type="number" name="curriculum_year_start" min="2000" max="2100" class="border rounded px-3 py-2 w-full" required>
                     </div>
                     <div class="flex-1">
-                        <label class="font-semibold">Year End <span class="text-red-500">*</span></label>
+                        <label class="font-semibold"><?= formatLabel('Year End') ?> <span class="text-red-500">*</span></label>
                         <input type="number" name="curriculum_year_end" min="2000" max="2100" class="border rounded px-3 py-2 w-full" required>
                     </div>
                 </div>
                 <div>
-                    <label class="font-semibold">Semester <span class="text-red-500">*</span></label>
+                    <label class="font-semibold"><?= formatLabel('Semester') ?> <span class="text-red-500">*</span></label>
                     <select name="semester" class="border rounded px-3 py-2 w-full" required>
-                        <option value="1st">1st</option>
-                        <option value="2nd">2nd</option>
-                        <option value="Summer">Summer</option>
+                        <option value="1st"><?= formatLabel('1st') ?></option>
+                        <option value="2nd"><?= formatLabel('2nd') ?></option>
+                        <option value="Summer"><?= formatLabel('Summer') ?></option>
                     </select>
                 </div>
-                <label class="font-semibold">Description</label>
+                <label class="font-semibold"><?= formatLabel('Description') ?></label>
                 <textarea name="description" class="border rounded px-3 py-2 w-full" rows="2"></textarea>
-                <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 mt-2 transition">Add Curriculum</button>
+                <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 mt-2 transition"><?= formatLabel('Add Curriculum') ?></button>
             </form>
         </div>
     </div>
@@ -517,13 +525,41 @@ if ($selected_curriculum_id && isset($evaluation_stats[$selected_curriculum_id])
         });
     </script>
     <style>
-        .badge { font-size: 0.85em; padding: 0.2em 0.7em; border-radius: 999px; font-weight: 600; }
-        .badge-green { background: #d1fae5; color: #047857; }
-        .badge-red { background: #fee2e2; color: #b91c1c; }
-        .badge-blue { background: #dbeafe; color: #2563eb; }
-        .badge-gray { background: #f3f4f6; color: #374151; }
-        .card-shadow { box-shadow: 0 2px 8px 0 rgba(0,0,0,0.07); }
-        .table th, .table td { white-space: nowrap; }
+        .badge {
+            font-size: 0.85em;
+            padding: 0.2em 0.7em;
+            border-radius: 999px;
+            font-weight: 600;
+            display: inline-block;
+            line-height: 1.2;
+            vertical-align: middle;
+            text-align: center;
+            min-width: 2em;
+        }
+        .badge-green {
+            background: #d1fae5;
+            color: #047857;
+        }
+        .badge-red {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+        .badge-blue {
+            background: #dbeafe;
+            color: #2563eb;
+        }
+        .badge-gray {
+            background: #f3f4f6;
+            color: #374151;
+        }
+        .card-shadow {
+            box-shadow: 0 2px 8px 0 rgba(0,0,0,0.07);
+        }
+        .table th,
+        .table td {
+            white-space: nowrap;
+            vertical-align: middle;
+        }
     </style>
 </body>
 </html>
