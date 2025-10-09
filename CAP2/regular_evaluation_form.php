@@ -31,7 +31,22 @@ if ($curr_stmt && $row = $curr_stmt->fetch_assoc()) {
 
 // --- 2. Get evaluatee and evaluation type from GET/POST ---
 $evaluatee_id = $_GET['evaluatee_id'] ?? $_GET['faculty_id'] ?? $_POST['evaluatee_id'] ?? $_POST['faculty_id'] ?? null;
-$evaluation_type = strtolower($_GET['type'] ?? $_POST['type'] ?? 'peer'); 
+
+// Map incoming type to the correct evaluation_type key
+function mapEvaluationTypeKey($type) {
+    switch (strtolower($type)) {
+        case 'self': return 'Self';
+        case 'hrtofaculty': return 'HRtoFaculty';
+        case 'hrtostaff': return 'HRtoStaff';
+        case 'programheadtofaculty': return 'ProgramHeadToFaculty';
+        case 'facultypeer': return 'FacultyPeer';
+        case 'headtostaff': return 'HeadToStaff';
+        case 'staffpeer': return 'StaffPeer';
+        default: return 'FacultyPeer'; // fallback
+    }
+}
+$evaluation_type = mapEvaluationTypeKey($_GET['type'] ?? $_POST['type'] ?? 'facultypeer');
+
 $already_submitted = false;
 $questions = [];
 $section = '';
@@ -41,35 +56,55 @@ $emptyMsg = 'No evaluation questions have been set by the admin yet.';
 $evaluatee_name = '';
 
 // --- 3. Get evaluatee info ---
-$evaluatee_type = $_GET['evaluatee_type'] ?? $_POST['evaluatee_type'] ?? 'faculty'; // default to faculty
+$evaluatee_type = $_GET['evaluatee_type'] ?? $_POST['evaluatee_type'] ?? 'faculty';
 
 if ($evaluatee_id) {
-    if ($evaluatee_type === 'staff') {
+    if (strtolower($evaluatee_type) === 'staff') {
         // Fetch staff info
-        $stmt = $conn->prepare("SELECT first_name, middle_name, last_name FROM staff WHERE staff_id = ?");
+        $stmt = $conn->prepare("SELECT first_name, middle_name, last_name, department_id FROM staff WHERE staff_id = ?");
         $stmt->bind_param("i", $evaluatee_id);
         $stmt->execute();
-        $stmt->bind_result($eval_first, $eval_middle, $eval_last);
+        $stmt->bind_result($eval_first, $eval_middle, $eval_last, $eval_dept);
         $stmt->fetch();
         $stmt->close();
         $evaluatee_name = trim($eval_first . ' ' . ($eval_middle ? $eval_middle . ' ' : '') . $eval_last);
+        $department = $eval_dept;
 
-        // Assign questionnaire for staff (by priority: staff_id, then general)
+        // Assign questionnaire for staff (by priority: staff_id, department_id, then general)
         $questionnaire_id = 0;
-        $q_assign = $conn->prepare("
-            SELECT questionnaire_id
-            FROM questionnaire_assignments
-            WHERE status = 'active'
-              AND (role = 'Staff' OR role = 'Head Staff')
-              AND (
-                staff_id = ?
-                OR (staff_id IS NULL)
-              )
-              AND (evaluation_type = 'Staff' OR evaluation_type = 'HeadToStaff')
-            ORDER BY staff_id DESC
-            LIMIT 1
-        ");
-        $q_assign->bind_param("i", $evaluatee_id);
+        if ($evaluation_type === 'HRtoStaff' || $evaluation_type === 'HeadToStaff' || $evaluation_type === 'StaffPeer') {
+            $q_assign = $conn->prepare("
+                SELECT questionnaire_id
+                FROM questionnaire_assignments
+                WHERE status = 'active'
+                  AND evaluation_type = ?
+                  AND (
+                    staff_id = ?
+                    OR (department_id = ? AND staff_id IS NULL)
+                    OR (staff_id IS NULL AND department_id IS NULL)
+                  )
+                ORDER BY staff_id DESC, department_id DESC
+                LIMIT 1
+            ");
+            $q_assign->bind_param("sii", $evaluation_type, $evaluatee_id, $department);
+        } else {
+            // Fallback: try StaffPeer
+            $q_assign = $conn->prepare("
+                SELECT questionnaire_id
+                FROM questionnaire_assignments
+                WHERE status = 'active'
+                  AND evaluation_type = 'StaffPeer'
+                  AND (
+                    staff_id = ?
+                    OR (department_id = ? AND staff_id IS NULL)
+                    OR (staff_id IS NULL AND department_id IS NULL)
+                  )
+                ORDER BY staff_id DESC, department_id DESC
+                LIMIT 1
+            ");
+            $q_assign->bind_param("ii", $evaluatee_id, $department);
+        }
+
         $q_assign->execute();
         $q_assign->bind_result($questionnaire_id);
         $q_assign->fetch();
@@ -101,67 +136,48 @@ if ($evaluatee_id) {
         $department = $eval_dept;
         $program = $eval_prog;
 
-        // --- 4. Get assigned questionnaire for this faculty (active only, by priority) ---
+        // Assign questionnaire for faculty (by priority: faculty_id, department_id, program_id, then general)
         $questionnaire_id = 0;
-        if ($evaluation_type === 'self') {
-            // Self Evaluation
+        if (
+            $evaluation_type === 'Self' ||
+            $evaluation_type === 'HRtoFaculty' ||
+            $evaluation_type === 'ProgramHeadToFaculty' ||
+            $evaluation_type === 'FacultyPeer'
+        ) {
             $q_assign = $conn->prepare("
                 SELECT questionnaire_id
                 FROM questionnaire_assignments
                 WHERE status = 'active'
-                  AND evaluation_type = 'Self'
+                  AND evaluation_type = ?
                   AND (
                     faculty_id = ?
                     OR (department_id = ? AND faculty_id IS NULL)
                     OR (program_id = ? AND faculty_id IS NULL AND department_id IS NULL)
                     OR (faculty_id IS NULL AND department_id IS NULL AND program_id IS NULL)
                   )
-                ORDER BY
-                    faculty_id DESC,
-                    department_id DESC,
-                    program_id DESC
+                ORDER BY faculty_id DESC, department_id DESC, program_id DESC
                 LIMIT 1
             ");
-        } elseif ($evaluation_type === 'programheadtofaculty') {
-            // Program Head to Faculty Evaluation
-            $q_assign = $conn->prepare("
-                SELECT questionnaire_id
-                FROM questionnaire_assignments
-                WHERE status = 'active'
-                  AND evaluation_type = 'ProgramHeadToFaculty'
-                  AND (
-                    faculty_id = ?
-                    OR (department_id = ? AND faculty_id IS NULL)
-                    OR (program_id = ? AND faculty_id IS NULL AND department_id IS NULL)
-                    OR (faculty_id IS NULL AND department_id IS NULL AND program_id IS NULL)
-                  )
-                ORDER BY
-                    faculty_id DESC,
-                    department_id DESC,
-                    program_id DESC
-                LIMIT 1
-            ");
+            $q_assign->bind_param("siii", $evaluation_type, $evaluatee_id, $department, $program);
         } else {
-            // Peer to Peer (Faculty to Faculty) Evaluation
+            // Fallback: try FacultyPeer
             $q_assign = $conn->prepare("
                 SELECT questionnaire_id
                 FROM questionnaire_assignments
                 WHERE status = 'active'
-                  AND evaluation_type = 'Peer'
+                  AND evaluation_type = 'FacultyPeer'
                   AND (
                     faculty_id = ?
                     OR (department_id = ? AND faculty_id IS NULL)
                     OR (program_id = ? AND faculty_id IS NULL AND department_id IS NULL)
                     OR (faculty_id IS NULL AND department_id IS NULL AND program_id IS NULL)
                   )
-                ORDER BY
-                    faculty_id DESC,
-                    department_id DESC,
-                    program_id DESC
+                ORDER BY faculty_id DESC, department_id DESC, program_id DESC
                 LIMIT 1
             ");
+            $q_assign->bind_param("iii", $evaluatee_id, $department, $program);
         }
-        $q_assign->bind_param("iii", $evaluatee_id, $department, $program);
+
         $q_assign->execute();
         $q_assign->bind_result($questionnaire_id);
         $q_assign->fetch();
@@ -169,7 +185,6 @@ if ($evaluatee_id) {
 
         $questions = [];
         if ($questionnaire_id) {
-            // Fetch questions for this questionnaire
             $q_stmt = $conn->prepare("SELECT id, question_text FROM questions WHERE questionnaire_id = ? ORDER BY id ASC");
             $q_stmt->bind_param("i", $questionnaire_id);
             $q_stmt->execute();
@@ -179,8 +194,6 @@ if ($evaluatee_id) {
             }
             $q_stmt->close();
             $emptyMsg = 'No questions found for the assigned questionnaire.';
-        } else {
-            $emptyMsg = 'No questionnaire assigned for this faculty.';
         }
     }
 }
@@ -219,6 +232,20 @@ if ($currentUserId && $evaluatee_id && $questionnaire_id && $curriculum_id) {
     $check->close();
     $already_submitted = $already_count > 0;
 }
+
+// --- Determine if HR (for evaluation logic) ---
+$isHR = ($userRole === 'HR');
+
+// --- Allow self-evaluation for HR if they are also staff/faculty ---
+if ($evaluation_type === 'self' && $isHR) {
+    // HR can evaluate self if they are also staff/faculty
+    // You may need to check if $_SESSION['staff_id'] or $_SESSION['faculty_id'] is set
+    $self_id = $_SESSION['staff_id'] ?? $_SESSION['faculty_id'] ?? null;
+    if ($self_id && $evaluatee_id == $self_id) {
+        // Allow self-evaluation for HR
+        // The rest of your logic for self-evaluation will work as is
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -248,13 +275,6 @@ if ($currentUserId && $evaluatee_id && $questionnaire_id && $curriculum_id) {
             Evaluation Form
             <?php if (!empty($evaluatee_name)): ?>
                 <span class="block text-lg text-gray-600 font-normal">for <?= htmlspecialchars($evaluatee_name) ?></span>
-            <?php endif; ?>
-            <?php if ($evaluation_type === 'Self'): ?>
-                <span class="ml-2 px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-semibold align-middle">Self Evaluation</span>
-            <?php elseif ($evaluation_type === 'ProgramHeadtoFaculty'): ?>
-                <span class="ml-2 px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs font-semibold align-middle">Program Head to Faculty Evaluation</span>
-            <?php elseif ($evaluation_type === 'Peer'): ?>
-                <span class="ml-2 px-2 py-1 bg-yellow-100 text-yellow-700 rounded text-xs font-semibold align-middle">Faculty to Faculty (Peer) Evaluation</span>
             <?php endif; ?>
         </h2>
 
