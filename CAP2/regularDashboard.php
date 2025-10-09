@@ -48,6 +48,19 @@ function mapRoleToEnum($role) {
     }
 }
 
+// Add this mapping function for evaluation type keys
+function getEvaluationTypeKey($user_role, $peer_type = 'faculty') {
+    switch (strtolower($user_role)) {
+        case 'faculty': return 'FacultyPeer';
+        case 'program head': return 'ProgramHeadToFaculty';
+        case 'hr':
+            return $peer_type === 'staff' ? 'HRtoStaff' : 'HRtoFaculty';
+        case 'head staff': return 'HeadToStaff';
+        case 'staff': return 'StaffPeer';
+        default: return 'FacultyPeer';
+    }
+}
+
 // --- ADMIN/HR LOGIC ---
 $adminEvaluations = [];
 if ($isAdmin) {
@@ -246,20 +259,91 @@ if ($isRegular) {
     $instructorEvaluations = [];
     if ($user_role === 'Faculty' || $user_role === 'Program Head') {
         if ($faculty_department && $faculty_program) {
+            // Fetch faculty peers
             $stmt = $conn->prepare("
-                SELECT f.faculty_id, f.first_name, f.middle_name, f.last_name, f.department_id, d.department_name, f.program_id, p.program_name
-                FROM faculty f
-                LEFT JOIN departments d ON f.department_id = d.id
-                LEFT JOIN programs p ON f.program_id = p.program_id
-                WHERE f.department_id = ? AND f.program_id = ? AND f.faculty_id != ?
+            SELECT f.faculty_id AS id, f.first_name, f.middle_name, f.last_name, f.department_id, d.department_name, f.program_id, p.program_name, 'faculty' AS type
+            FROM faculty f
+            LEFT JOIN departments d ON f.department_id = d.id
+            LEFT JOIN programs p ON f.program_id = p.program_id
+            WHERE f.department_id = ? AND f.program_id = ? AND f.faculty_id != ?
             ");
             $stmt->bind_param("iii", $faculty_department, $faculty_program, $faculty_id);
             $stmt->execute();
-            $peers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $faculty_peers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
+
+            // Fetch staff peers in same department (exclude self)
+            $stmt = $conn->prepare("
+            SELECT s.staff_id AS id, s.first_name, s.middle_name, s.last_name, s.department_id, d.department_name, NULL AS program_id, NULL AS program_name, 'staff' AS type
+            FROM staff s
+            LEFT JOIN departments d ON s.department_id = d.id
+            WHERE s.department_id = ? AND s.staff_id != ?
+            ");
+            $stmt->bind_param("ii", $faculty_department, $faculty_id);
+            $stmt->execute();
+            $staff_peers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+
+            $peers = array_merge($faculty_peers, $staff_peers);
 
             // Determine evaluation type for peer evaluation
             $peer_eval_type = ($user_role === 'Program Head') ? 'ProgramHeadToFaculty' : 'Peer';
+
+            // Get the active peer/programhead evaluation questionnaire for this department/program
+            $questionnaire_id = 0;
+            $q_assign = $conn->prepare("
+            SELECT questionnaire_id
+            FROM questionnaire_assignments
+            WHERE status = 'active'
+              AND evaluation_type = ?
+              AND (
+                department_id = ? OR department_id IS NULL
+              )
+              AND (
+                program_id = ? OR program_id IS NULL
+              )
+            ORDER BY department_id DESC, program_id DESC
+            LIMIT 1
+            ");
+            $q_assign->bind_param("sii", $peer_eval_type, $faculty_department, $faculty_program);
+            $q_assign->execute();
+            $q_assign->bind_result($questionnaire_id);
+            $q_assign->fetch();
+            $q_assign->close();
+
+            $peerIds = array_column($peers, 'id');
+            $peerStatus = [];
+            if (!empty($peerIds)) {
+            $inQuery = implode(',', array_fill(0, count($peerIds), '?'));
+
+            // Use curriculum semester and year
+            $currentSemester = $curriculum_semester ? "{$curriculum_semester} Sem $currentAcademicYear" : $currentAcademicYear;
+
+            $sql = "SELECT evaluated_id FROM evaluation_responses 
+                WHERE evaluator_id = ? 
+                AND evaluated_id IN ($inQuery) 
+                AND status = 'completed'
+                AND questionnaire_id = ?
+                AND curriculum_id = ?";
+            $types = "i" . str_repeat('i', count($peerIds)) . "ii";
+            $params = array_merge([$user_id], $peerIds, [$questionnaire_id, $curriculum_id]);
+            $check = $conn->prepare($sql);
+            $check->bind_param($types, ...$params);
+            $check->execute();
+            $result = $check->get_result();
+            while ($row = $result->fetch_assoc()) {
+                $peerStatus[$row['evaluated_id']] = true;
+            }
+            $check->close();
+            }
+
+            foreach ($peers as $p) {
+            $peerId = $p['id'];
+            $middleName = $p['middle_name'] ? ' ' . htmlspecialchars($p['middle_name']) : '';
+            $fullName = htmlspecialchars($p['first_name']) . $middleName . ' ' . htmlspecialchars($p['last_name']);
+
+            // Get the correct evaluation type for faculty peer
+            $peer_eval_type = ($user_role === 'Program Head') ? 'ProgramHeadToFaculty' : 'FacultyPeer';
 
             // Get the active peer/programhead evaluation questionnaire for this department/program
             $questionnaire_id = 0;
@@ -283,46 +367,20 @@ if ($isRegular) {
             $q_assign->fetch();
             $q_assign->close();
 
-            $peerIds = array_column($peers, 'faculty_id');
-            $peerStatus = [];
-            if (!empty($peerIds)) {
-                $inQuery = implode(',', array_fill(0, count($peerIds), '?'));
-
-                // Use curriculum semester and year
-                $currentSemester = $curriculum_semester ? "{$curriculum_semester} Sem $currentAcademicYear" : $currentAcademicYear;
-
-                $sql = "SELECT evaluated_id FROM evaluation_responses 
-                        WHERE evaluator_id = ? 
-                        AND evaluated_id IN ($inQuery) 
-                        AND status = 'completed'
-                        AND questionnaire_id = ?
-                        AND curriculum_id = ?";
-                $types = "i" . str_repeat('i', count($peerIds)) . "ii";
-                $params = array_merge([$user_id], $peerIds, [$questionnaire_id, $curriculum_id]);
-                $check = $conn->prepare($sql);
-                $check->bind_param($types, ...$params);
-                $check->execute();
-                $result = $check->get_result();
-                while ($row = $result->fetch_assoc()) {
-                    $peerStatus[$row['evaluated_id']] = true;
-                }
-                $check->close();
-            }
-
-            foreach ($peers as $p) {
-                $peerId = $p['faculty_id'];
-                $middleName = $p['middle_name'] ? ' ' . htmlspecialchars($p['middle_name']) : '';
-                $fullName = htmlspecialchars($p['first_name']) . $middleName . ' ' . htmlspecialchars($p['last_name']);
-
-                // Get the number of questions for this questionnaire
+            // Get the number of questions for this questionnaire
+            $question_count = 0;
+            if ($questionnaire_id > 0) {
                 $qCountStmt = $conn->prepare("SELECT COUNT(*) FROM questions WHERE questionnaire_id = ?");
                 $qCountStmt->bind_param("i", $questionnaire_id);
                 $qCountStmt->execute();
                 $qCountStmt->bind_result($question_count);
                 $qCountStmt->fetch();
                 $qCountStmt->close();
+            }
 
-                // Count the number of completed responses for this peer
+            // Count the number of completed responses for this peer (all questions answered)
+            $completed_count = 0;
+            if ($questionnaire_id > 0) {
                 $stmt = $conn->prepare("
                     SELECT COUNT(*) 
                     FROM evaluation_responses 
@@ -331,6 +389,7 @@ if ($isRegular) {
                       AND questionnaire_id = ? 
                       AND curriculum_id = ? 
                       AND status = 'completed'
+                      AND question_id IS NOT NULL
                 ");
                 $stmt->bind_param(
                     "iiii",
@@ -343,56 +402,10 @@ if ($isRegular) {
                 $stmt->bind_result($completed_count);
                 $stmt->fetch();
                 $stmt->close();
-
-                // Only mark as completed if questionnaire and questions exist
-                $has_evaluated = ($questionnaire_id > 0 && $question_count > 0 && $completed_count >= $question_count);
-
-                $instructorEvaluations[] = [
-                    'id' => $peerId,
-                    'name' => $fullName,
-                    'course' => "Course Placeholder",
-                    'semester' => $currentSemester,
-                    'schedule' => "Flexible",
-                    'status' => $has_evaluated ? 'completed' : 'pending',
-                    'department_name' => $p['department_name'],
-                    'program_name' => $p['program_name']
-                ];
             }
-        }
-    } elseif ($user_role === 'Staff' || $user_role === 'Head Staff') {
-        $stmt = $conn->prepare("
-            SELECT staff_id, first_name, middle_name, last_name, department_id
-            FROM staff 
-            WHERE staff_id != ?
-        ");
-        $stmt->bind_param("i", $faculty_id);
-        $stmt->execute();
-        $peers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $stmt->close();
 
-        $peerIds = array_column($peers, 'staff_id');
-        $peerStatus = [];
-        if (!empty($peerIds)) {
-            $inQuery = implode(',', array_fill(0, count($peerIds), '?'));
-            $types = str_repeat('i', count($peerIds) + 2);
-            $params = array_merge([$user_id], $peerIds, [$curriculum_id]);
-
-            $sql = "SELECT evaluated_id FROM evaluation_responses WHERE evaluator_id = ? AND evaluated_id IN ($inQuery) AND status = 'completed' AND curriculum_id = ?";
-            $check = $conn->prepare($sql);
-            $check->bind_param($types, ...$params);
-            $check->execute();
-            $result = $check->get_result();
-            while ($row = $result->fetch_assoc()) {
-                $peerStatus[$row['evaluated_id']] = true;
-            }
-            $check->close();
-        }
-
-        foreach ($peers as $p) {
-            $peerId = $p['staff_id'];
-            $middleName = $p['middle_name'] ? ' ' . htmlspecialchars($p['middle_name']) : '';
-            $fullName = htmlspecialchars($p['first_name']) . $middleName . ' ' . htmlspecialchars($p['last_name']);
-            $has_evaluated = isset($peerStatus[$peerId]);
+            // Only mark as completed if questionnaire and questions exist and all are answered
+            $has_evaluated = ($questionnaire_id > 0 && $question_count > 0 && $completed_count >= $question_count);
 
             $instructorEvaluations[] = [
                 'id' => $peerId,
@@ -402,33 +415,51 @@ if ($isRegular) {
                 'schedule' => "Flexible",
                 'status' => $has_evaluated ? 'completed' : 'pending',
                 'department_name' => $p['department_name'],
-                'program_name' => $p['program_name']
+                'program_name' => $p['program_name'],
+                'type' => $p['type']
             ];
+            }
         }
-    } elseif ($user_role === 'HR') {
-        // HR can evaluate all faculty and staff (except self)
-        $faculty = $conn->query("
-            SELECT faculty_id AS id, first_name, middle_name, last_name, department_id, d.department_name, faculty.program_id, p.program_name, 'faculty' AS type
-            FROM faculty
-            LEFT JOIN departments d ON faculty.department_id = d.id
-            LEFT JOIN programs p ON faculty.program_id = p.program_id
-            WHERE faculty_id != $faculty_id
-        ")->fetch_all(MYSQLI_ASSOC);
-
-        $staff = $conn->query("
-            SELECT staff_id AS id, first_name, middle_name, last_name, department_id, d.department_name, NULL AS program_id, NULL AS program_name, 'staff' AS type
+    } elseif ($user_role === 'Staff' || $user_role === 'Head Staff') {
+        // Get user's department
+        $stmt = $conn->prepare("
+            SELECT department_id
             FROM staff
-            LEFT JOIN departments d ON staff.department_id = d.id
-            WHERE staff_id != $faculty_id
-        ")->fetch_all(MYSQLI_ASSOC);
+            WHERE staff_id = ?
+        ");
+        $stmt->bind_param("i", $faculty_id);
+        $stmt->execute();
+        $stmt->bind_result($user_department_id);
+        $stmt->fetch();
+        $stmt->close();
 
-        $peers = array_merge($faculty, $staff);
+        // Fetch all staff in the same department except self
+        $stmt = $conn->prepare("
+            SELECT 
+                s.staff_id AS id, 
+                s.first_name, 
+                s.middle_name, 
+                s.last_name, 
+                s.role,
+                s.department_id, 
+                d.department_name,
+                NULL AS program_id,
+                NULL AS program_name,
+                'staff' AS type
+            FROM staff s
+            LEFT JOIN departments d ON s.department_id = d.id
+            WHERE s.staff_id != ? AND s.department_id = ?
+        ");
+        $stmt->bind_param("ii", $faculty_id, $user_department_id);
+        $stmt->execute();
+        $peers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
 
         $peerIds = array_column($peers, 'id');
         $peerStatus = [];
         if (!empty($peerIds)) {
             $inQuery = implode(',', array_fill(0, count($peerIds), '?'));
-            $types = str_repeat('i', count($peerIds) + 2);
+            $types = "i" . str_repeat('i', count($peerIds)) . "i";
             $params = array_merge([$user_id], $peerIds, [$curriculum_id]);
 
             $sql = "SELECT evaluated_id FROM evaluation_responses WHERE evaluator_id = ? AND evaluated_id IN ($inQuery) AND status = 'completed' AND curriculum_id = ?";
@@ -456,7 +487,63 @@ if ($isRegular) {
                 'schedule' => "Flexible",
                 'status' => $has_evaluated ? 'completed' : 'pending',
                 'department_name' => $p['department_name'],
-                'program_name' => $p['program_name']
+                'program_name' => $p['program_name'],
+                'type' => $p['type']
+            ];
+        }
+    } elseif ($user_role === 'HR') {
+        // HR can evaluate all faculty and staff (except self)
+        $faculty = $conn->query("
+            SELECT faculty_id AS id, first_name, middle_name, last_name, department_id, d.department_name, faculty.program_id, p.program_name, 'faculty' AS type
+            FROM faculty
+            LEFT JOIN departments d ON faculty.department_id = d.id
+            LEFT JOIN programs p ON faculty.program_id = p.program_id
+            WHERE faculty_id != $faculty_id
+        ")->fetch_all(MYSQLI_ASSOC);
+
+        $staff = $conn->query("
+            SELECT staff_id AS id, first_name, middle_name, last_name, department_id, d.department_name, NULL AS program_id, NULL AS program_name, 'staff' AS type
+            FROM staff
+            LEFT JOIN departments d ON staff.department_id = d.id
+            WHERE staff_id != $faculty_id
+        ")->fetch_all(MYSQLI_ASSOC);
+
+        $peers = array_merge($faculty, $staff);
+
+        $peerIds = array_column($peers, 'id');
+        $peerStatus = [];
+        if (!empty($peerIds)) {
+            $inQuery = implode(',', array_fill(0, count($peerIds), '?'));
+            $types = "i" . str_repeat('i', count($peerIds)) . "i";
+            $params = array_merge([$user_id], $peerIds, [$curriculum_id]);
+
+            $sql = "SELECT evaluated_id FROM evaluation_responses WHERE evaluator_id = ? AND evaluated_id IN ($inQuery) AND status = 'completed' AND curriculum_id = ?";
+            $check = $conn->prepare($sql);
+            $check->bind_param($types, ...$params);
+            $check->execute();
+            $result = $check->get_result();
+            while ($row = $result->fetch_assoc()) {
+                $peerStatus[$row['evaluated_id']] = true;
+            }
+            $check->close();
+        }
+
+        foreach ($peers as $p) {
+            $peerId = $p['id'];
+            $middleName = $p['middle_name'] ? ' ' . htmlspecialchars($p['middle_name']) : '';
+            $fullName = htmlspecialchars($p['first_name']) . $middleName . ' ' . htmlspecialchars($p['last_name']);
+            $has_evaluated = isset($peerStatus[$peerId]);
+
+            $instructorEvaluations[] = [
+                'id' => $peerId,
+                'name' => $fullName,
+                'course' => "N/A",
+                'semester' => $currentSemester,
+                'schedule' => "Flexible",
+                'status' => $has_evaluated ? 'completed' : 'pending',
+                'department_name' => $p['department_name'],
+                'program_name' => $p['program_name'],
+                'type' => $p['type']
             ];
         }
     }
@@ -484,64 +571,76 @@ if ($isRegular) {
     <title>Evaluation Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-green-50 font-sans min-h-screen">
+<body class="bg-green-50 font-sans min-h-screen flex flex-col">
     <?php include 'header.php'; ?>
 
-    <main class="max-w-8xl mx-auto px-2 sm:px-8 py-4 sm:py-12 mt-16 sm:mt-24">
+    <!-- Sticky Header Spacer -->
+    <div class="h-16 sm:h-24"></div>
+
+    <main class="flex-1 w-full max-w-8xl mx-auto px-2 sm:px-4 md:px-8 lg:px-12 py-4 sm:py-8">
+        <!-- Welcome Header -->
         <div class="bg-white shadow rounded-xl p-6 mb-8">
-            <h2 class="text-xl font-semibold mb-2">Welcome to your Dashboard</h2>
-            <p class="text-gray-700">Complete your evaluations for the current semester.</p>
+            <h2 class="text-xl font-semibold mb-2">Welcome to your Dashboard.</h2>
+            <p class="text-gray-700">Kindly complete your evaluations for the ongoing semester.</p>
         </div>
         <?php if ($isRegular): ?>
-            <!-- Regular User Stats -->
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
-                <div class="flex items-center bg-white rounded-xl shadow p-5">
-                    <div class="bg-blue-100 text-blue-600 rounded-full p-3 mr-4">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <!-- Stats Cards -->
+            <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+                <div class="flex items-center bg-white rounded-xl shadow hover:shadow-lg transition p-5">
+                    <div class="bg-blue-100 text-blue-600 rounded-full p-3 mr-4 flex-shrink-0">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                             <path d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m9-4.13a4 4 0 10-8 0 4 4 0 008 0z" />
                         </svg>
                     </div>
-                    <div>
-                        <div class="text-gray-500 text-sm">Total Faculty</div>
-                        <div class="text-2xl font-bold"><?php echo $totalInstructors; ?></div>
+                    <div class="min-w-0">
+                        <div class="text-gray-500 text-sm truncate">
+                            Total <?= ($user_role === 'Staff' || $user_role === 'Head Staff') ? 'Staff' : 'Faculty'; ?>
+                        </div>
+                        <div class="text-2xl font-bold text-gray-900"><?php echo $totalInstructors; ?></div>
                     </div>
                 </div>
-                <div class="flex items-center bg-white rounded-xl shadow p-5">
-                    <div class="bg-green-100 text-green-600 rounded-full p-3 mr-4">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <div class="flex items-center bg-white rounded-xl shadow hover:shadow-lg transition p-5">
+                    <div class="bg-green-100 text-green-600 rounded-full p-3 mr-4 flex-shrink-0">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                             <path d="M5 13l4 4L19 7" />
                         </svg>
                     </div>
-                    <div>
-                        <div class="text-gray-500 text-sm">Evaluated Faculty</div>
-                        <div class="text-2xl font-bold"><?php echo $evaluated; ?></div>
+                    <div class="min-w-0">
+                        <div class="text-gray-500 text-sm truncate">
+                            Evaluated <?= ($user_role === 'Staff' || $user_role === 'Head Staff') ? 'Staff' : 'Faculty'; ?>
+                        </div>
+                        <div class="text-2xl font-bold text-gray-900"><?php echo $evaluated; ?></div>
                     </div>
                 </div>
-                <div class="flex items-center bg-white rounded-xl shadow p-5">
-                    <div class="bg-yellow-100 text-yellow-600 rounded-full p-3 mr-4">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <div class="flex items-center bg-white rounded-xl shadow hover:shadow-lg transition p-5">
+                    <div class="bg-yellow-100 text-yellow-600 rounded-full p-3 mr-4 flex-shrink-0">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                             <path d="M12 8v4l3 3" />
                             <circle cx="12" cy="12" r="10" />
                         </svg>
                     </div>
-                    <div>
-                        <div class="text-gray-500 text-sm">Pending Evaluations</div>
-                        <div class="text-2xl font-bold"><?php echo $pending; ?></div>
+                    <div class="min-w-0">
+                        <div class="text-gray-500 text-sm truncate">
+                            Pending <?= ($user_role === 'Staff' || $user_role === 'Head Staff') ? 'Staff' : 'Faculty'; ?> Evaluations
+                        </div>
+                        <div class="text-2xl font-bold text-gray-900"><?php echo $pending; ?></div>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            <!-- Self Evaluation -->
+            <!-- Self Evaluation Section -->
             <section class="mb-8">
-                <h2 class="text-xl font-semibold text-gray-800 mb-4">Self Evaluation</h2>
+                <h2 class="text-xl sm:text-2xl font-semibold text-gray-800 mb-4">Self Evaluation</h2>
                 <div class="space-y-4">
                     <div class="bg-white rounded-xl shadow hover:shadow-xl transition p-5 flex flex-col sm:flex-row sm:justify-between sm:items-center border-t-4 border-yellow-400">
-                        <div>
-                            <p class="font-semibold text-gray-800"><?= $faculty_fullName; ?></p>
-                            <p class="text-gray-700">Self Evaluation</p>
+                        <div class="min-w-0">
+                            <p class="font-semibold text-gray-800 text-lg truncate">
+                                <?= ucwords(strtolower($faculty_fullName)); ?>
+                            </p>
+                            <p class="text-gray-700 text-base">Self Evaluation</p>
                             <p class="text-gray-500 text-sm"><?= $currentSemester; ?></p>
                         </div>
-                        <div class="mt-2 sm:mt-0 flex items-center gap-2">
+                        <div class="mt-4 sm:mt-0 flex items-center gap-2 flex-wrap">
                             <span class="px-3 py-1 rounded-full text-xs font-semibold <?= $selfEvaluationStatus === 'pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'; ?>">
                                 <?= ucfirst($selfEvaluationStatus); ?>
                             </span>
@@ -561,11 +660,11 @@ if ($isRegular) {
                 </div>
             </section>
 
-            <!-- HR Evaluation -->
+            <!-- Peers / HR Evaluation Cards -->
             <section>
-                <h2 class="text-xl font-semibold text-gray-800 mb-4">
+                <h2 class="text-xl sm:text-2xl font-semibold text-gray-800 mb-4">
                     <?php if ($user_role === 'HR'): ?>
-                        Faculty and Staff Available for Evaluation
+                        Faculty and Available for Evaluation
                     <?php else: ?>
                         Peers Available for Evaluation
                     <?php endif; ?>
@@ -575,7 +674,7 @@ if ($isRegular) {
                 <?php else: ?>
                     <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
                         <?php foreach ($instructorEvaluations as $i): ?>
-                            <div class="bg-white rounded-xl shadow p-5 text-center border-t-4 <?= $i['status'] === 'pending' ? 'border-yellow-400' : 'border-green-400'; ?>">
+                            <div class="bg-white rounded-xl shadow hover:shadow-lg transition p-5 text-center border-t-4 <?= $i['status'] === 'pending' ? 'border-yellow-400' : 'border-green-400'; ?>">
                                 <div class="w-16 h-16 mx-auto rounded-full bg-emerald-100 flex items-center justify-center mb-3">
                                     <span class="text-2xl font-bold text-emerald-700"><?= strtoupper(substr($i['name'], 0, 1)); ?></span>
                                 </div>
@@ -593,46 +692,42 @@ if ($isRegular) {
                                 }
                                 $fullName = htmlspecialchars($nameParts[0]) . $middleName . ' ' . htmlspecialchars($nameParts[1]);
                                 ?>
-                                <p class="font-semibold text-gray-800 text-lg"><?= $fullName; ?></p>
-                                <p class="text-gray-600 text-sm">
-                                    Department: <?= htmlspecialchars($i['department_name'] ?? 'N/A'); ?><br>
-                                    Program: <?= htmlspecialchars($i['program_name'] ?? 'N/A'); ?>
+                                <p class="font-semibold text-gray-800 text-lg truncate"><?= $fullName; ?></p>
+                                <p class="text-gray-600 text-sm break-words">
+                                    Department: <?= ucwords(strtolower($i['department_name'] ?? 'N/A')); ?>
+                                    <?php if ($i['type'] === 'faculty'): ?>
+                                        <br>Program: <?= isset($i['program_name']) && $i['program_name'] ? ucwords(strtolower($i['program_name'])) : 'N/A'; ?>
+                                    <?php endif; ?>
                                 </p>
                                 <span class="block my-2 px-3 py-1 rounded-full text-xs font-semibold <?= $i['status'] === 'pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'; ?>">
                                     <?= ucfirst($i['status']); ?>
                                 </span>
                                 <?php
-                                    $viewType = 'peer';
+                                    $viewType = 'FacultyPeer';
                                     $evaluateeType = 'faculty';
                                     if ($user_role === 'HR') {
-                                        $viewType = 'hrto' . (isset($i['type']) ? $i['type'] : 'faculty');
-                                        $evaluateeType = isset($i['type']) && $i['type'] === 'staff' ? 'staff' : 'faculty';
+                                        $viewType = ($i['type'] === 'staff') ? 'HRtoStaff' : 'HRtoFaculty';
+                                        $evaluateeType = ($i['type'] === 'staff') ? 'staff' : 'faculty';
                                     } elseif ($user_role === 'Program Head') {
-                                        $viewType = 'programheadtofaculty';
+                                        $viewType = 'ProgramHeadToFaculty';
+                                    } elseif ($user_role === 'Head Staff') {
+                                        $viewType = 'HeadToStaff';
+                                        $evaluateeType = 'staff';
+                                    } elseif ($user_role === 'Staff') {
+                                        $viewType = 'StaffPeer';
+                                        $evaluateeType = 'staff';
                                     }
                                 ?>
                                 <?php if ($i['status'] === 'completed'): ?>
                                     <a href="viewEvaluation.php?evaluatee_id=<?= $i['id']; ?>&type=<?= $viewType; ?>&evaluatee_type=<?= $evaluateeType; ?>"
-                                        class="block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold">
+                                        class="block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold transition">
                                         View Evaluation
                                     </a>
                                 <?php else: ?>
-                                    <?php if ($user_role === 'Program Head'): ?>
-                                        <a href="regular_evaluation_form.php?evaluatee_id=<?= $i['id']; ?>&type=programheadtofaculty"
-                                            class="block bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold">
-                                            Evaluate as Program Head
-                                        </a>
-                                    <?php elseif ($user_role === 'HR'): ?>
-                                        <a href="regular_evaluation_form.php?evaluatee_id=<?= htmlspecialchars($i['id']); ?>&type=hrto<?= isset($i['type']) ? htmlspecialchars($i['type']) : 'faculty'; ?>"
-                                            class="block bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold">
-                                            Evaluate as HR
-                                        </a>
-                                    <?php else: ?>
-                                        <a href="regular_evaluation_form.php?evaluatee_id=<?= $i['id']; ?>&type=peer"
-                                            class="block bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold">
-                                            Evaluate as Peer
-                                        </a>
-                                    <?php endif; ?>
+                                    <a href="regular_evaluation_form.php?evaluatee_id=<?= $i['id']; ?>&type=<?= $viewType; ?>&evaluatee_type=<?= $evaluateeType; ?>"
+                                       class="block bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold">
+                                        Evaluate Now
+                                    </a>
                                 <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
