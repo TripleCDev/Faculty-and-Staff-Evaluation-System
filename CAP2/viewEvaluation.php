@@ -2,6 +2,9 @@
 session_start();
 require_once 'config.php';
 
+// Set timezone for Philippine time
+date_default_timezone_set('Asia/Manila');
+
 // Ensure user is logged in
 if (!isset($_SESSION['user_id'])) {
     echo "Not logged in.";
@@ -10,7 +13,7 @@ if (!isset($_SESSION['user_id'])) {
 
 $user_id = $_SESSION['user_id'];
 $evaluatee_id = $_GET['evaluatee_id'] ?? null;
-$type = $_GET['type'] ?? null; // 'peer', 'self', 'admin', 'programhead', 'staff'
+$type = $_GET['type'] ?? null; // Use exact evaluation_type key
 $evaluatee_type = $_GET['evaluatee_type'] ?? 'faculty'; // 'faculty' or 'staff'
 $course_id = $_GET['course_id'] ?? null;
 
@@ -27,17 +30,19 @@ $status = 'Pending';
 $evaluator_name = '';
 $evaluation_id = null;
 
-// Fetch data depending on type and evaluatee_type
+// --- Updated: Use correct evaluation_type keys and avoid unknown column error ---
 if ($evaluatee_type === 'staff') {
-    // Staff to Staff Evaluation
-    $stmt = $conn->prepare("
+    // Staff evaluations
+    // Remove evaluation_type filtering since column does not exist
+    $query = "
         SELECT er.evaluation_id, er.evaluator_id, er.evaluated_id AS staff_id, s.first_name, s.middle_name, s.last_name, er.score, er.comments, er.evaluated_date
         FROM evaluation_responses er
         LEFT JOIN staff s ON er.evaluated_id = s.staff_id
         WHERE er.evaluated_id = ? AND er.status = 'completed'
         ORDER BY er.evaluated_date DESC
         LIMIT 1
-    ");
+    ";
+    $stmt = $conn->prepare($query);
     $stmt->bind_param('i', $evaluatee_id);
     $stmt->execute();
     $result = $stmt->get_result();
@@ -56,171 +61,50 @@ if ($evaluatee_type === 'staff') {
         $stmt->execute();
         $evaluator = $stmt->get_result()->fetch_assoc();
         $stmt->close();
-        $evaluator_name = trim($evaluator['first_name'] . ' ' . ($evaluator['middle_name'] ? $evaluator['middle_name'] . ' ' : '') . $evaluator['last_name']);
+        if ($evaluator) {
+            $evaluator_name = trim($evaluator['first_name'] . ' ' . ($evaluator['middle_name'] ? $evaluator['middle_name'] . ' ' : '') . $evaluator['last_name']);
+        } else {
+            $evaluator_name = 'Staff';
+        }
     } else {
         $evaluator_name = 'Staff';
     }
 } else {
-    // Faculty to Faculty (Peer/Self/Admin/Program Head)
-    switch ($type) {
-        case 'admin':
-            $stmt = $conn->prepare("
-                SELECT er.evaluation_id, er.evaluator_id, er.evaluated_id AS faculty_id, f.first_name, f.middle_name, f.last_name, er.score, er.comments, er.evaluated_date
-                FROM evaluation_responses er
-                LEFT JOIN faculty f ON er.evaluated_id = f.faculty_id
-                WHERE er.evaluated_id = ? AND er.evaluator_id IN (SELECT id FROM users WHERE role = 'HR') AND er.status = 'completed'
-                ORDER BY er.evaluated_date DESC
-                LIMIT 1
-            ");
-            $stmt->bind_param('i', $evaluatee_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $evaluation = $result->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
+    // Faculty evaluations
+    $query = "
+        SELECT er.evaluation_id, er.evaluator_id, er.evaluated_id AS faculty_id, f.first_name, f.middle_name, f.last_name, er.score, er.comments, er.evaluated_date
+        FROM evaluation_responses er
+        LEFT JOIN faculty f ON er.evaluated_id = f.faculty_id
+        WHERE er.evaluated_id = ? AND er.status = 'completed'
+        ORDER BY er.evaluated_date DESC
+        LIMIT 1
+    ";
+    $stmt = $conn->prepare($query);
+    $stmt->bind_param('i', $evaluatee_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $evaluation = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 
-            $criteria_count = count($evaluation);
-            $average_score = $criteria_count ? $evaluation[0]['score'] : 0;
-            $status = $criteria_count ? 'Completed' : 'Pending';
-            $evaluation_id = $criteria_count ? $evaluation[0]['evaluation_id'] : null;
-            $evaluator_name = 'Administrator';
-            break;
+    $criteria_count = count($evaluation);
+    $average_score = $criteria_count ? $evaluation[0]['score'] : 0;
+    $status = $criteria_count ? 'Completed' : 'Pending';
+    $evaluation_id = $criteria_count ? $evaluation[0]['evaluation_id'] : null;
 
-        case 'peer':
-        case 'self':
-            $stmt = $conn->prepare("
-                SELECT er.evaluation_id, er.evaluator_id, er.evaluated_id AS faculty_id, f.first_name, f.middle_name, f.last_name, er.score, er.comments, er.evaluated_date
-                FROM evaluation_responses er
-                LEFT JOIN faculty f ON er.evaluated_id = f.faculty_id
-                WHERE er.evaluated_id = ? AND er.status = 'completed'
-                ORDER BY er.evaluated_date DESC
-                LIMIT 1
-            ");
-            $stmt->bind_param('i', $evaluatee_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $evaluation = $result->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            $criteria_count = count($evaluation);
-            $average_score = $criteria_count ? $evaluation[0]['score'] : 0;
-            $status = $criteria_count ? 'Completed' : 'Pending';
-            $evaluation_id = $criteria_count ? $evaluation[0]['evaluation_id'] : null;
-
-            if ($type === 'peer' && $criteria_count && isset($evaluation[0]['evaluator_id'])) {
-                $stmt = $conn->prepare("SELECT first_name, middle_name, last_name FROM faculty WHERE faculty_id = ?");
-                $stmt->bind_param("i", $evaluation[0]['evaluator_id']);
-                $stmt->execute();
-                $evaluator = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                $evaluator_name = $evaluator ? trim($evaluator['first_name'] . ' ' . ($evaluator['middle_name'] ? $evaluator['middle_name'] . ' ' : '') . $evaluator['last_name']) : 'Peer';
-            } elseif ($type === 'self') {
-                $evaluator_name = 'Self';
-            } else {
-                $evaluator_name = 'Faculty';
-            }
-            break;
-
-        case 'programhead':
-            $stmt = $conn->prepare("SELECT faculty_id, department_id FROM faculty WHERE user_id = ?");
-            $stmt->bind_param("i", $_SESSION['user_id']);
-            $stmt->execute();
-            $ph = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-
-            if (!$ph) {
-                echo "Program Head record not found.";
-                exit;
-            }
-
-            $ph_department = $ph['department_id'];
-
-            $stmt = $conn->prepare("
-                SELECT er.evaluation_id, er.evaluator_id, er.evaluated_id AS faculty_id, f.first_name, f.middle_name, f.last_name, er.score, er.comments, er.evaluated_date
-                FROM evaluation_responses er
-                LEFT JOIN faculty f ON er.evaluated_id = f.faculty_id
-                WHERE er.evaluated_id = ? AND f.department_id = ? AND er.status = 'completed'
-                ORDER BY er.evaluated_date DESC
-                LIMIT 1
-            ");
-            $stmt->bind_param("ii", $evaluatee_id, $ph_department);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $evaluation = $result->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            $criteria_count = count($evaluation);
-            $average_score = $criteria_count ? $evaluation[0]['score'] : 0;
-            $status = $criteria_count ? 'Completed' : 'Pending';
-            $evaluation_id = $criteria_count ? $evaluation[0]['evaluation_id'] : null;
-            $evaluator_name = 'Program Head';
-            break;
-
-        case 'hrtofaculty':
-            // HR evaluating faculty logic (can be similar to peer or admin logic)
-            $evaluatee_type = 'faculty';
-            $stmt = $conn->prepare("
-                SELECT er.evaluation_id, er.evaluator_id, er.evaluated_id AS faculty_id, f.first_name, f.middle_name, f.last_name, er.score, er.comments, er.evaluated_date
-                FROM evaluation_responses er
-                LEFT JOIN faculty f ON er.evaluated_id = f.faculty_id
-                WHERE er.evaluated_id = ? AND er.evaluator_id IN (SELECT id FROM users WHERE role = 'HR') AND er.status = 'completed'
-                ORDER BY er.evaluated_date DESC
-                LIMIT 1
-            ");
-            $stmt->bind_param('i', $evaluatee_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $evaluation = $result->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            $criteria_count = count($evaluation);
-            $average_score = $criteria_count ? $evaluation[0]['score'] : 0;
-            $status = $criteria_count ? 'Completed' : 'Pending';
-            $evaluation_id = $criteria_count ? $evaluation[0]['evaluation_id'] : null;
-            $evaluator_name = 'Administrator';
-            break;
-
-        case 'hrtostaff':
-            // HR evaluating staff logic
-            $evaluatee_type = 'staff';
-            $stmt = $conn->prepare("
-                SELECT er.evaluation_id, er.evaluator_id, er.evaluated_id AS staff_id, s.first_name, s.middle_name, s.last_name, er.score, er.comments, er.evaluated_date
-                FROM evaluation_responses er
-                LEFT JOIN staff s ON er.evaluated_id = s.staff_id
-                WHERE er.evaluated_id = ? AND er.status = 'completed'
-                ORDER BY er.evaluated_date DESC
-                LIMIT 1
-            ");
-            $stmt->bind_param('i', $evaluatee_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $evaluation = $result->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            $criteria_count = count($evaluation);
-            $average_score = $criteria_count ? $evaluation[0]['score'] : 0;
-            $status = $criteria_count ? 'Completed' : 'Pending';
-            $evaluation_id = $criteria_count ? $evaluation[0]['evaluation_id'] : null;
-
-            // Fetch evaluator name
-            if ($criteria_count && isset($evaluation[0]['evaluator_id'])) {
-                $stmt = $conn->prepare("SELECT first_name, middle_name, last_name FROM staff WHERE staff_id = ?");
-                $stmt->bind_param("i", $evaluation[0]['evaluator_id']);
-                $stmt->execute();
-                $evaluator = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                $evaluator_name = trim($evaluator['first_name'] . ' ' . ($evaluator['middle_name'] ? $evaluator['middle_name'] . ' ' : '') . $evaluator['last_name']);
-            } else {
-                $evaluator_name = 'Staff';
-            }
-            break;
-
-        default:
-            echo "Unknown evaluation type.";
-            exit;
+    // Fetch evaluator name
+    if ($criteria_count && isset($evaluation[0]['evaluator_id'])) {
+        $stmt = $conn->prepare("SELECT first_name, middle_name, last_name FROM faculty WHERE faculty_id = ?");
+        $stmt->bind_param("i", $evaluation[0]['evaluator_id']);
+        $stmt->execute();
+        $evaluator = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $evaluator_name = $evaluator ? trim($evaluator['first_name'] . ' ' . ($evaluator['middle_name'] ? $evaluator['middle_name'] . ' ' : '') . $evaluator['last_name']) : 'Faculty';
+    } else {
+        $evaluator_name = 'Faculty';
     }
 }
 
-// --- Function to display per-question answers ---
+// --- Function to display per-question answers (optional, only if table exists) ---
 function renderPerQuestionAnswers($conn, $evaluation_id, $evaluatee_type = 'faculty')
 {
     $qstmt = $conn->prepare("
@@ -228,12 +112,10 @@ function renderPerQuestionAnswers($conn, $evaluation_id, $evaluatee_type = 'facu
             er.question_id, 
             q.question_text, 
             er.answer,
-            co.option_point
+            er.score
         FROM evaluation_responses er
         JOIN questions q ON er.question_id = q.id
-        LEFT JOIN criteria_options co 
-            ON co.option_text = er.answer
-        WHERE er.evaluation_id = ?
+        WHERE er.evaluation_id = ? AND er.question_id IS NOT NULL
         ORDER BY q.id ASC
     ");
     $qstmt->bind_param("i", $evaluation_id);
@@ -264,9 +146,9 @@ function renderPerQuestionAnswers($conn, $evaluation_id, $evaluatee_type = 'facu
             echo htmlspecialchars($qrow['answer']);
             echo '</span></td>';
             echo '<td class="py-3 px-6 border-b border-emerald-100">';
-            if ($qrow['option_point'] !== null) {
+            if ($qrow['score'] !== null) {
                 echo '<span class="inline-block bg-green-100 text-green-800 font-semibold px-3 py-1 rounded-full shadow-sm">';
-                echo htmlspecialchars($qrow['option_point']);
+                echo htmlspecialchars($qrow['score']);
                 echo '</span>';
             } else {
                 echo '<span class="text-gray-400">N/A</span>';
@@ -280,30 +162,7 @@ function renderPerQuestionAnswers($conn, $evaluation_id, $evaluatee_type = 'facu
     $qstmt->close();
 }
 
-// Determine evaluation label
 $evaluationLabel = '';
-switch ($type) {
-    case 'self':
-        $evaluationLabel = 'Self Evaluation';
-        break;
-    case 'peer':
-        $evaluationLabel = 'Faculty to Faculty (Peer) Evaluation';
-        break;
-    case 'programheadtofaculty':
-        $evaluationLabel = 'Program Head to Faculty Evaluation';
-        break;
-    case 'admin':
-        $evaluationLabel = 'Admin Evaluation';
-        break;
-        case 'hrtofaculty':
-            $evaluationLabel = 'HR to Faculty Evaluation';
-            break;
-        case 'hrtostaff':
-            $evaluationLabel = 'HR to Staff Evaluation';
-            break;
-    default:
-        $evaluationLabel = 'Evaluation';
-}
 
 // Calculate total score for this evaluation_id
 if ($evaluation_id) {
@@ -378,13 +237,11 @@ $curr_stmt->close();
                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m0 0H3"></path>
                     </svg>
                     Evaluation Details
-                    <span
-                        class="ml-3 px-3 py-1 rounded bg-yellow-100 text-yellow-800 text-xs font-semibold"><?= $evaluationLabel ?></span>
                 </h2>
                 <?php if ($criteria_count === 0): ?>
                     <p class="text-red-600 font-semibold">No evaluation records found.</p>
                 <?php else: ?>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-green-900 text-base">
+                   <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-green-900 text-base">
                         <div>
                             <span class="font-semibold">Evaluator:</span>
                             <span>
@@ -396,14 +253,6 @@ $curr_stmt->close();
                                     $stmt->execute();
                                     $evaluator = $stmt->get_result()->fetch_assoc();
                                     $stmt->close();
-                                    if ($evaluator) {
-                                        echo htmlspecialchars($evaluator['role']);
-                                        if (!empty($evaluator['role'])) {
-                                            echo ' <span class="text-xs text-gray-500">(' . htmlspecialchars($evaluator['role']) . ')</span>';
-                                        }
-                                    } else {
-                                        echo 'Unknown';
-                                    }
                                 } elseif ($type === 'peer' && isset($evaluation[0]['evaluator_id'])) {
                                     // Faculty or Program Head evaluator
                                     $stmt = $conn->prepare("SELECT first_name, middle_name, last_name, role FROM users WHERE id = ?");
@@ -417,9 +266,6 @@ $curr_stmt->close();
                                             ($evaluator['middle_name'] ? $evaluator['middle_name'] . ' ' : '') .
                                             $evaluator['last_name']
                                         );
-                                        if (!empty($evaluator['role'])) {
-                                            echo ' <span class="text-xs text-gray-500">(' . htmlspecialchars($evaluator['role']) . ')</span>';
-                                        }
                                     } else {
                                         echo 'Unknown';
                                     }
@@ -447,10 +293,6 @@ $curr_stmt->close();
                                     echo 'Program Head';
                                 } elseif ($type === 'self') {
                                     echo 'Self';
-                                } elseif ($type === 'hrtofaculty') {
-                                    echo 'HR';
-                                } elseif ($type === 'hrtostaff') {
-                                    echo 'HR';
                                 } else {
                                     echo 'Faculty';
                                 }
@@ -461,8 +303,8 @@ $curr_stmt->close();
                             <span class="font-semibold">Evaluation Date:</span>
                             <span>
                                 <?php
-                                if ($criteria_count > 0 && isset($evaluation[0]['evaluated_date'])) {
-                                    echo htmlspecialchars($evaluation[0]['evaluated_date']);
+                                if ($criteria_count > 0 && isset($evaluation[0]['evaluated_date']) && $evaluation[0]['evaluated_date']) {
+                                    echo date("F d, Y h:i A", strtotime($evaluation[0]['evaluated_date']));
                                 } else {
                                     echo 'N/A';
                                 }
@@ -484,11 +326,10 @@ $curr_stmt->close();
 
             <!-- Per-Question Answers Section -->
             <?php
-            if ($criteria_count) {
+            if ($criteria_count && $evaluation_id) {
                 renderPerQuestionAnswers($conn, $evaluation_id, $evaluatee_type);
             }
             ?>
-
             <!-- Return Button -->
             <div class="flex justify-center mt-10">
                 <button onclick="window.history.back();"
