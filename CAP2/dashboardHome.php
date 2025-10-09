@@ -90,93 +90,241 @@ function getEvalStatus($conn, $faculty_id, $type, $admin_id = null)
 
     // 🟢 SELF ASSESSMENT
     if ($type === 'self') {
-        $questionnaire_id = null;
+        $isFaculty = $conn->query("SELECT id FROM faculty WHERE id = $faculty_id")->num_rows > 0;
+        $isStaff = $conn->query("SELECT id FROM staff WHERE id = $faculty_id")->num_rows > 0;
 
-        // 1️⃣ Find assigned questionnaire for "Self" evaluation
-        $assign_stmt = $conn->prepare("
-    SELECT questionnaire_id 
-    FROM questionnaire_assignments 
-    WHERE (faculty_id = ? OR faculty_id IS NULL)
-      AND (evaluation_type = 'Self' OR evaluation_type = 'self' OR evaluation_type IS NULL)
-      AND status = 'active'
-    ORDER BY id DESC
-    LIMIT 1
-");
-        $assign_stmt->bind_param('i', $faculty_id);
-        $assign_stmt->execute();
-        $assign_stmt->bind_result($questionnaire_id);
-        $assign_stmt->fetch();
-        $assign_stmt->close();
+        if ($isFaculty) {
+            // Get user_id and faculty_id
+            $user_id = null;
+            $faculty_id_val = null;
+            $user_stmt = $conn->prepare("SELECT user_id, faculty_id FROM faculty WHERE id = ?");
+            $user_stmt->bind_param('i', $faculty_id);
+            $user_stmt->execute();
+            $user_stmt->bind_result($user_id, $faculty_id_val);
+            $user_stmt->fetch();
+            $user_stmt->close();
 
-        if (!$questionnaire_id) {
+            // Find active self questionnaire assignment
+            $assign_stmt = $conn->prepare("
+                SELECT questionnaire_id 
+                FROM questionnaire_assignments 
+                WHERE (faculty_id = ? OR faculty_id IS NULL)
+                  AND (evaluation_type = 'Self' OR evaluation_type = 'self' OR evaluation_type IS NULL)
+                  AND status = 'active'
+                ORDER BY id DESC
+                LIMIT 1
+            ");
+            $assign_stmt->bind_param('i', $faculty_id);
+            $assign_stmt->execute();
+            $questionnaire_id = null;
+            $assign_stmt->bind_result($questionnaire_id);
+            $assign_stmt->fetch();
+            $assign_stmt->close();
+
+            if (!$questionnaire_id) {
+                return '<span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span>';
+            }
+
+            // Get total questions for this questionnaire
+            $total_questions = 0;
+            $qstmt = $conn->prepare("SELECT COUNT(*) FROM questions WHERE questionnaire_id = ?");
+            $qstmt->bind_param('i', $questionnaire_id);
+            $qstmt->execute();
+            $qstmt->bind_result($total_questions);
+            $qstmt->fetch();
+            $qstmt->close();
+
+            // Count completed self responses
+            $completed_questions = 0;
+            $r_stmt = $conn->prepare("
+                SELECT COUNT(DISTINCT er.question_id)
+                FROM evaluation_responses er
+                WHERE er.evaluator_id = ?
+                  AND er.evaluated_id = ?
+                  AND er.questionnaire_id = ?
+                  AND er.status = 'completed'
+            ");
+            $r_stmt->bind_param('iii', $user_id, $faculty_id_val, $questionnaire_id);
+            $r_stmt->execute();
+            $r_stmt->bind_result($completed_questions);
+            $r_stmt->fetch();
+            $r_stmt->close();
+
+            if ($completed_questions >= $total_questions && $total_questions > 0) {
+                $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-green-200 text-green-800 font-semibold text-xs">Completed</span>';
+            } elseif ($completed_questions > 0 && $completed_questions < $total_questions) {
+                $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-orange-200 text-orange-800 font-semibold text-xs">In Progress</span>';
+            } else {
+                $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-yellow-200 text-yellow-800 font-semibold text-xs">Pending</span>';
+            }
+            return $status;
+        } elseif ($isStaff) {
+            // Staff logic
+            $assign_stmt = $conn->prepare("
+                SELECT questionnaire_id 
+                FROM questionnaire_assignments 
+                WHERE (staff_id = ? OR staff_id IS NULL)
+                  AND (evaluation_type = 'Self' OR evaluation_type = 'self' OR evaluation_type IS NULL)
+                  AND status = 'active'
+                ORDER BY id DESC
+                LIMIT 1
+            ");
+            $assign_stmt->bind_param('i', $faculty_id);
+            $assign_stmt->execute();
+            $questionnaire_id = null;
+            $assign_stmt->bind_result($questionnaire_id);
+            $assign_stmt->fetch();
+            $assign_stmt->close();
+
+            if (!$questionnaire_id) {
+                return '<span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span>';
+            }
+
+            $total_questions = 0;
+            $qstmt = $conn->prepare("SELECT COUNT(*) FROM questions WHERE questionnaire_id = ?");
+            $qstmt->bind_param('i', $questionnaire_id);
+            $qstmt->execute();
+            $qstmt->bind_result($total_questions);
+            $qstmt->fetch();
+            $qstmt->close();
+
+            // Get staff user_id and staff_id
+            $user_id = null;
+            $staff_id_val = null;
+            $user_stmt = $conn->prepare("SELECT user_id, staff_id FROM staff WHERE id = ?");
+            $user_stmt->bind_param('i', $faculty_id);
+            $user_stmt->execute();
+            $user_stmt->bind_result($user_id, $staff_id_val);
+            $user_stmt->fetch();
+            $user_stmt->close();
+
+            $completed_questions = 0;
+            $r_stmt = $conn->prepare("
+                SELECT COUNT(DISTINCT er.question_id)
+                FROM evaluation_responses er
+                INNER JOIN staff s ON er.evaluator_id = s.user_id
+                WHERE s.id = ?
+                  AND er.evaluated_id = s.staff_id
+                  AND er.questionnaire_id = ?
+                  AND er.status = 'completed'
+            ");
+            $r_stmt->bind_param('ii', $faculty_id, $questionnaire_id);
+            $r_stmt->execute();
+            $r_stmt->bind_result($completed_questions);
+            $r_stmt->fetch();
+            $r_stmt->close();
+
+            if ($completed_questions >= $total_questions && $total_questions > 0) {
+                $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-green-200 text-green-800 font-semibold text-xs">Completed</span>';
+            } elseif ($completed_questions > 0 && $completed_questions < $total_questions) {
+                $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-orange-200 text-orange-800 font-semibold text-xs">In Progress</span>';
+            }
+
+            return $status;
+        } else {
             return '<span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span>';
         }
-
-        // 2️⃣ Count total questions for that questionnaire
-        $total_questions = 0;
-        $qstmt = $conn->prepare("SELECT COUNT(*) FROM questions WHERE questionnaire_id = ?");
-        $qstmt->bind_param('i', $questionnaire_id);
-        $qstmt->execute();
-        $qstmt->bind_result($total_questions);
-        $qstmt->fetch();
-        $qstmt->close();
-
-        // 3️⃣ Count completed responses by the same faculty
-        // 3️⃣ Count completed responses by the same faculty (corrected mapping)
-        $completed_questions = 0;
-        $r_stmt = $conn->prepare("
-    SELECT COUNT(DISTINCT er.question_id)
-    FROM evaluation_responses er
-    INNER JOIN faculty f ON er.evaluator_id = f.user_id
-    WHERE f.id = ?
-      AND er.evaluated_id = f.faculty_id
-      AND er.questionnaire_id = ?
-      AND er.status = 'completed'
-        ");
-        $r_stmt->bind_param('ii', $faculty_id, $questionnaire_id);
-        $r_stmt->execute();
-        $r_stmt->bind_result($completed_questions);
-        $r_stmt->fetch();
-        $r_stmt->close();
-
-        // 4️⃣ Determine status
-        if ($completed_questions >= $total_questions && $total_questions > 0) {
-            $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-green-200 text-green-800 font-semibold text-xs">Completed</span>';
-        } elseif ($completed_questions > 0 && $completed_questions < $total_questions) {
-            $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-orange-200 text-orange-800 font-semibold text-xs">In Progress</span>';
-        }
-
-        // Debug display (optional)
-        $debug = "<div style='color:red; font-size:10px;'>FID:$faculty_id | QID:$questionnaire_id | QCOUNT:$total_questions | DONE:$completed_questions</div>";
-
-        return $status . $debug;
     }
 
     // 🟣 PEER REVIEW
     elseif ($type === 'peer') {
-        $peerCountSql = "SELECT COUNT(*) FROM faculty WHERE id != ?";
-        $peerCountStmt = $conn->prepare($peerCountSql);
-        $peerCountStmt->bind_param('i', $faculty_id);
-        $totalPeers = 0;
-        $peerCountStmt->execute();
-        $peerCountStmt->bind_result($totalPeers);
-        $peerCountStmt->fetch();
-        $peerCountStmt->close();
+        // Detect if this is a faculty or staff
+        $isFaculty = $conn->query("SELECT id FROM faculty WHERE id = $faculty_id")->num_rows > 0;
+        $isStaff = $conn->query("SELECT id FROM staff WHERE id = $faculty_id")->num_rows > 0;
 
-        $sql = "SELECT COUNT(DISTINCT evaluated_id) FROM evaluation_responses WHERE evaluator_id=? AND evaluated_id != ? AND status='completed'";
-        $stmt = $conn->prepare($sql);
-        $stmt->bind_param('ii', $faculty_id, $faculty_id);
-        $completedPeers = 0;
-        $stmt->execute();
-        $stmt->bind_result($completedPeers);
-        $stmt->fetch();
-        $stmt->close();
+        if ($isFaculty) {
+            // Faculty logic (as before)
+            $user_id = null;
+            $user_stmt = $conn->prepare("SELECT user_id FROM faculty WHERE id = ?");
+            $user_stmt->bind_param('i', $faculty_id);
+            $user_stmt->execute();
+            $user_stmt->bind_result($user_id);
+            $user_stmt->fetch();
+            $user_stmt->close();
 
-        if ($totalPeers > 0 && $completedPeers >= $totalPeers) {
-            $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-green-200 text-green-800 font-semibold text-xs">Completed</span>';
+            $peerCountSql = "SELECT COUNT(*) FROM faculty WHERE id != ?";
+            $peerCountStmt = $conn->prepare($peerCountSql);
+            $peerCountStmt->bind_param('i', $faculty_id);
+            $totalPeers = 0;
+            $peerCountStmt->execute();
+            $peerCountStmt->bind_result($totalPeers);
+            $peerCountStmt->fetch();
+            $peerCountStmt->close();
+
+            $sql = "SELECT COUNT(DISTINCT evaluated_id) FROM evaluation_responses WHERE evaluator_id=? AND evaluated_id != ? AND status='completed'";
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param('ii', $user_id, $user_id);
+            $completedPeers = 0;
+            $stmt->execute();
+            $stmt->bind_result($completedPeers);
+            $stmt->fetch();
+            $stmt->close();
+
+            if ($totalPeers > 0 && $completedPeers >= $totalPeers) {
+                $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-green-200 text-green-800 font-semibold text-xs">Completed</span>';
+            }
+
+            return $status;
+        } elseif ($isStaff) {
+            // Staff logic
+            $user_id = null;
+            $staff_id_val = null;
+            $role = null;
+            $department_id = null;
+            $user_stmt = $conn->prepare("SELECT user_id, staff_id, role, department_id FROM staff WHERE id = ?");
+            $user_stmt->bind_param('i', $faculty_id);
+            $user_stmt->execute();
+            $user_stmt->bind_result($user_id, $staff_id_val, $role, $department_id);
+            $user_stmt->fetch();
+            $user_stmt->close();
+
+            // Only count staff peers in the same department (excluding self, Head Staff, HR, and those with NULL department)
+            $peerIds = [];
+            $peerSql = "SELECT staff_id FROM staff WHERE id != ? AND role = 'Staff' AND department_id = ?";
+            $peerStmt = $conn->prepare($peerSql);
+            $peerStmt->bind_param('ii', $faculty_id, $department_id);
+            $peerStmt->execute();
+            $peer_staff_id = null;
+            $peerStmt->bind_result($peer_staff_id);
+            while ($peerStmt->fetch()) {
+                $peerIds[] = $peer_staff_id;
+            }
+            $peerStmt->close();
+            $totalPeers = count($peerIds);
+
+            // Count completed peer evaluations for those peers
+            $completedPeers = 0;
+            if ($totalPeers > 0) {
+                // Build dynamic IN clause
+                $in = implode(',', array_fill(0, count($peerIds), '?'));
+                $types = str_repeat('i', count($peerIds) + 1);
+                $sql = "SELECT COUNT(DISTINCT evaluated_id) FROM evaluation_responses WHERE evaluator_id=? AND evaluated_id IN ($in) AND status='completed'";
+                $stmt = $conn->prepare($sql);
+
+                // Prepare parameters for bind_param
+                $params = array_merge([$user_id], $peerIds);
+
+                // Use call_user_func_array for dynamic bind_param
+                $bind_names[] = $types;
+                foreach ($params as $key => $value) {
+                    $bind_names[] = &$params[$key];
+                }
+                call_user_func_array([$stmt, 'bind_param'], $bind_names);
+
+                $stmt->execute();
+                $stmt->bind_result($completedPeers);
+                $stmt->fetch();
+                $stmt->close();
+            }
+
+            if ($totalPeers > 0 && $completedPeers >= $totalPeers) {
+                $status = '<span class="inline-flex items-center px-3 py-1 rounded-full bg-green-200 text-green-800 font-semibold text-xs">Completed</span>';
+            }
+
+            return $status;
+        } else {
+            return '<span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span>';
         }
-
-        return $status;
     }
 
     // 🟡 PROGRAM HEAD REVIEW
@@ -239,7 +387,6 @@ function getEvalStatus($conn, $faculty_id, $type, $admin_id = null)
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 </head>
-
 <body class="bg-[#f4f6fa] min-h-screen overflow-y-auto">
     <main class="p-10 fade max-w-[1800px] mx-auto mb-[10rem]">
         <h1 class="text-3xl font-bold text-[#467C4F] mb-6 flex items-center gap-3">
@@ -282,7 +429,7 @@ function getEvalStatus($conn, $faculty_id, $type, $admin_id = null)
                             <th class="py-3 px-4 text-left">Self Assessment</th>
                             <th class="py-3 px-4 text-left">Peer Review</th>
                             <th class="py-3 px-4 text-left">Program Head Review</th>
-                            <th class="py-3 px-4 text-left">Admin Review</th>
+                            <th class="py-3 px-4 text-left">HR Review</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -291,25 +438,82 @@ function getEvalStatus($conn, $faculty_id, $type, $admin_id = null)
                         foreach ($allPeopleList as $person):
                             $person_id = $person['id'];
                             $role = $person['role'];
-                            $name = $person['first_name'] . ' ' . $person['last_name'];
+                            // Format name professionally
+                            $name = ucwords(strtolower($person['first_name'])) . ' ' . ucwords(strtolower($person['last_name']));
                             $isFaculty = in_array($person_id, $facultyIds);
                         ?>
-    <tr class="border-b last:border-b-0">
-        <td class="py-3 px-4 font-semibold"><?= $i++ ?></td>
-        <td class="py-3 px-4"><?= htmlspecialchars($name) ?></td>
-        <td class="py-3 px-4"><?= htmlspecialchars($role) ?></td>
-        <?php if ($isFaculty): ?>
+<tr class="border-b last:border-b-0">
+    <td class="py-3 px-4 font-semibold"><?= $i++ ?></td>
+    <td class="py-3 px-4"><?= htmlspecialchars($name) ?></td>
+    <td class="py-3 px-4"><?= htmlspecialchars($role) ?></td>
+    <?php if ($isFaculty): ?>
+        <td class="py-3 px-4"><?= getEvalStatus($conn, $person_id, 'self') ?></td>
+        <td class="py-3 px-4"><?= getEvalStatus($conn, $person_id, 'peer') ?></td>
+        <td class="py-3 px-4">
+            <?php if (strtolower($role) === 'program head'): ?>
+                <?php
+                $self = getEvalStatus($conn, $person_id, 'self');
+                $peer = getEvalStatus($conn, $person_id, 'peer');
+                if (strpos($self, 'Completed') !== false && strpos($peer, 'Completed') !== false) {
+                    echo '<span class="inline-flex items-center px-3 py-1 rounded-full bg-green-200 text-green-800 font-semibold text-xs">Completed</span>';
+                } else {
+                    echo '<span class="inline-flex items-center px-3 py-1 rounded-full bg-yellow-200 text-yellow-800 font-semibold text-xs">Pending</span>';
+                }
+                ?>
+            <?php else: ?>
+                <span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span>
+            <?php endif; ?>
+        </td>
+        <td class="py-3 px-4"><span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span></td>
+    <?php else: ?>
+        <?php if (strtolower($role) === 'hr'): ?>
+            <td class="py-3 px-4"><?= getEvalStatus($conn, $person_id, 'self') ?></td>
+            <td class="py-3 px-4"><span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span></td>
+            <td class="py-3 px-4"><span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span></td>
+            <td class="py-3 px-4">
+                <?php
+                // Get HR's user_id from users table
+                $hr_staff_id = $person['id'];
+                $hr_user_id = null;
+                $user_stmt = $conn->prepare("SELECT user_id FROM staff WHERE id = ?");
+                $user_stmt->bind_param('i', $hr_staff_id);
+                $user_stmt->execute();
+                $user_stmt->bind_result($hr_user_id);
+                $user_stmt->fetch();
+                $user_stmt->close();
+
+                // Get all faculty_ids for evaluation
+                $facultySql = "SELECT faculty_id FROM faculty";
+                $facultyRes = $conn->query($facultySql);
+                $facultyIdsForHR = [];
+                while ($facultyRes && $frow = $facultyRes->fetch_assoc()) {
+                    $facultyIdsForHR[] = $frow['faculty_id'];
+                }
+                $completedCount = 0;
+                foreach ($facultyIdsForHR as $fid) {
+                    $stmt = $conn->prepare("SELECT COUNT(*) FROM evaluation_responses WHERE evaluator_id = ? AND evaluated_id = ? AND status = 'completed'");
+                    $stmt->bind_param('ii', $hr_user_id, $fid);
+                    $stmt->execute();
+                    $stmt->bind_result($cnt);
+                    $stmt->fetch();
+                    $stmt->close();
+                    if ($cnt > 0) $completedCount++;
+                }
+                if ($completedCount === count($facultyIdsForHR) && count($facultyIdsForHR) > 0) {
+                    echo '<span class="inline-flex items-center px-3 py-1 rounded-full bg-green-200 text-green-800 font-semibold text-xs">Completed</span>';
+                } else {
+                    echo '<span class="inline-flex items-center px-3 py-1 rounded-full bg-yellow-200 text-yellow-800 font-semibold text-xs">Pending</span>';
+                }
+                ?>
+            </td>
+        <?php else: ?>
             <td class="py-3 px-4"><?= getEvalStatus($conn, $person_id, 'self') ?></td>
             <td class="py-3 px-4"><?= getEvalStatus($conn, $person_id, 'peer') ?></td>
-            <td class="py-3 px-4"><?= getEvalStatus($conn, $person_id, 'program_head') ?></td>
-            <td class="py-3 px-4"><?= getEvalStatus($conn, $person_id, 'admin', $admin_id) ?></td>
-        <?php else: ?>
-            <td class="py-3 px-4"><span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span></td>
-            <td class="py-3 px-4"><span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span></td>
             <td class="py-3 px-4"><span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span></td>
             <td class="py-3 px-4"><span class="inline-flex items-center px-3 py-1 rounded-full bg-gray-200 text-gray-800 font-semibold text-xs">N/A</span></td>
         <?php endif; ?>
-    </tr>
+    <?php endif; ?>
+</tr>
 <?php endforeach; ?>
 </tbody>
                 </table>
