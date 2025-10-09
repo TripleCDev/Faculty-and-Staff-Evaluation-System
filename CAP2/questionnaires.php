@@ -1,5 +1,11 @@
 <?php
+// Helper function to format labels safely and consistent capitalization
+function formatLabel($str) {
+    return ucwords(strtolower(htmlspecialchars($str, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')));
+}
+
 session_start();
+date_default_timezone_set('Asia/Manila');
 if (!empty($_SESSION['flash_success'])) {
     echo '<div id="flash-success" class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4 text-center">' . htmlspecialchars($_SESSION['flash_success']) . '</div>';
     unset($_SESSION['flash_success']);
@@ -87,7 +93,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_assignment_id'])
     $edit_evaluation_type = $_POST['edit_evaluation_type'] ?? null;
     $edit_faculty_id = isset($_POST['edit_faculty_id']) && $_POST['edit_faculty_id'] !== '' ? $_POST['edit_faculty_id'] : null;
     $edit_staff_id = isset($_POST['edit_staff_id']) && $_POST['edit_staff_id'] !== '' ? $_POST['edit_staff_id'] : null;
+    $edit_criteria_id = $_POST['edit_criteria_id'] ?? null;
+    $edit_weight_percentage = isset($_POST['edit_weight_percentage']) ? floatval($_POST['edit_weight_percentage']) : 100.00;
+    $edit_questions = isset($_POST['edit_questions']) ? array_filter(array_map('trim', explode("\n", $_POST['edit_questions']))) : [];
 
+    // Update assignment
     $stmt = $conn->prepare("UPDATE questionnaire_assignments SET questionnaire_id = ?, department_id = ?, program_id = ?, evaluation_type = ?, faculty_id = ?, staff_id = ? WHERE id = ?");
     $stmt->execute([
         $edit_questionnaire_id,
@@ -98,17 +108,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_assignment_id'])
         $edit_staff_id,
         $assignment_id
     ]);
+
+    // Update questionnaire criteria and weight
+    $qstmt = $conn->prepare("UPDATE questionnaires SET criteria_id = ?, weight_percentage = ? WHERE id = ?");
+    $qstmt->execute([$edit_criteria_id, $edit_weight_percentage, $edit_questionnaire_id]);
+
+    // Update questionnaire title
+    if (!empty($_POST['edit_questionnaire_title'])) {
+        $newTitle = trim($_POST['edit_questionnaire_title']);
+        $updateTitle = $conn->prepare("UPDATE questionnaires SET title = ? WHERE id = ?");
+        $updateTitle->execute([$newTitle, $edit_questionnaire_id]);
+    }
+
+    // Update questions: delete old, insert new
+    $delQ = $conn->prepare("DELETE FROM questions WHERE questionnaire_id = ?");
+    $delQ->execute([$edit_questionnaire_id]);
+    if ($edit_questions) {
+        $insQ = $conn->prepare("INSERT INTO questions (questionnaire_id, question_text, created_at) VALUES (?, ?, NOW())");
+        foreach ($edit_questions as $qtext) {
+            $insQ->execute([$edit_questionnaire_id, $qtext]);
+        }
+    }
+
     header("Location: " . $_SERVER['PHP_SELF']);
     exit;
 }
-
 $evalTypes = [
     'Self' => 'Self',
-    'Peer' => 'Peer',
-    'ProgramHeadToFaculty' => 'Program Head',
-    'Admin' => 'Admin',
-    'Staff' => 'Staff',
-    'HeadToStaff' => 'Head to Staff'
+    'HRtoFaculty' => 'HR to Faculty',
+    'HRtoStaff' => 'HR to Staff',
+    'ProgramHeadToFaculty' => 'Program Head to Faculty',
+    'FacultyPeer' => 'Faculty Peer',
+    'HeadToStaff' => 'Head to Staff',
+    'StaffPeer' => 'Staff Peer'
 ];
 
 $departments = $conn->query("SELECT id, department_name FROM departments ORDER BY department_name")->fetchAll(PDO::FETCH_ASSOC);
@@ -267,21 +299,148 @@ foreach ($criteriaRes as $c) {
     $c['options'] = implode(', ', $optionsArr);
     $criteriaList[] = $c;
 }
+// Fetch assignments for each evaluation type in $evalTypes
+$assignmentsByEvalType = [];
+foreach ($evalTypes as $evalKey => $evalLabel) {
+    $stmt = $conn->prepare("SELECT * FROM questionnaire_assignments WHERE evaluation_type = ? AND status = 'active'");
+    $stmt->execute([$evalKey]);
+    $assignmentsByEvalType[$evalKey] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+// Download Word for a specific questionnaire
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download_word'], $_POST['questionnaire_id'])) {
+    $qid = intval($_POST['questionnaire_id']);
+    // Fetch the questionnaire
+    $stmt = $conn->prepare("SELECT * FROM questionnaires WHERE id = ?");
+    $stmt->execute([$qid]);
+    $q = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Fetch assignments for Program Head to Faculty evaluation
-$stmt = $conn->prepare("SELECT * FROM questionnaire_assignments WHERE evaluation_type = 'ProgramHeadToFaculty' AND status = 'active'");
-$stmt->execute();
-$programHeadAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Fetch questions
+    $questionsArr = [];
+    $qstmt = $conn->prepare("SELECT question_text FROM questions WHERE questionnaire_id = ? ORDER BY id ASC");
+    $qstmt->execute([$qid]);
+    while ($row = $qstmt->fetch(PDO::FETCH_ASSOC)) {
+        $questionsArr[] = $row['question_text'];
+    }
+    // Fetch assignments for this questionnaire
+    $assignedEvalTypes = [];
+    $assignedDepartments = [];
+    $assignedPrograms = [];
+    $assignedCurriculum = [];
 
-// Fetch assignments for Faculty to Faculty (Peer) evaluation
-$stmt = $conn->prepare("SELECT * FROM questionnaire_assignments WHERE evaluation_type = 'Peer' AND status = 'active'");
-$stmt->execute();
-$facultyAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($assignments as $a) {
+        if ($a['questionnaire_id'] == $qid) {
+            if (!empty($a['evaluation_type']) && isset($evalTypes[$a['evaluation_type']])) {
+                $assignedEvalTypes[$a['evaluation_type']] = $evalTypes[$a['evaluation_type']];
+            }
+            if (!empty($a['department_id'])) {
+                foreach ($departments as $d) {
+                    if ($d['id'] == $a['department_id']) {
+                        $assignedDepartments[$d['id']] = $d['department_name'];
+                    }
+                }
+            }
+            if (!empty($a['program_id'])) {
+                foreach ($programs as $p) {
+                    if ($p['program_id'] == $a['program_id']) {
+                        $assignedPrograms[$p['program_id']] = $p['program_name'];
+                    }
+                }
+            }
+            if (!empty($a['curriculum_id'])) {
+                foreach ($curriculum as $c) {
+                    if ($c['curriculum_id'] == $a['curriculum_id']) {
+                        $assignedCurriculum[$c['curriculum_id']] = $c['curriculum_title'] . ' ' .
+                            $c['curriculum_year_start'] . '–' . $c['curriculum_year_end'] . ' (' . $c['semester'] . ' Sem)';
+                    }
+                }
+            }
+        }
+    }
 
-// Fetch assignments for Admin evaluation
-$stmt = $conn->prepare("SELECT * FROM questionnaire_assignments WHERE evaluation_type = 'Admin' AND status = 'active'");
-$stmt->execute();
-$adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Fetch criteria info for this questionnaire
+    $criteriaInfo = '';
+    if (!empty($q['criteria_id'])) {
+        foreach ($criteriaList as $c) {
+            if ($c['id'] == $q['criteria_id']) {
+                $criteriaInfo .= '<div style="margin-bottom:10px;">';
+                $criteriaInfo .= '<span style="font-weight:bold;">' . htmlspecialchars($c['name']) . '</span><br>';
+                $criteriaInfo .= '<span>Status: <b>' . ucfirst(htmlspecialchars($q['status'])) . '</b></span><br>';
+                $criteriaInfo .= '<span>Weight: <b>' . number_format($q['weight_percentage'], 2) . '%</b></span><br>';
+                $criteriaInfo .= '<span>Scale: <b>' . htmlspecialchars($c['type']) . '</b></span><br>';
+                // Criteria options
+                $optStmt = $conn->prepare("SELECT option_text, option_point FROM criteria_options WHERE criteria_id = ? ORDER BY option_order ASC, id ASC");
+                $optStmt->execute([$c['id']]);
+                $criteriaInfo .= '<span>Options:</span><ul style="margin-left:20px;">';
+                while ($optRow = $optStmt->fetch(PDO::FETCH_ASSOC)) {
+                    $criteriaInfo .= '<li>' . htmlspecialchars($optRow['option_text']) . ' <b>(' . htmlspecialchars($optRow['option_point']) . ')</b></li>';
+                }
+                $criteriaInfo .= '</ul>';
+                $criteriaInfo .= '</div>';
+                break;
+            }
+        }
+    }
+
+    // Start output buffering
+    ob_start();
+
+    echo '<html><head><meta charset="UTF-8"></head><body style="font-family:Calibri, Arial, sans-serif; font-size:12pt;">';
+
+    // Title
+    echo '<div style="text-align:center; margin-bottom:18px;">';
+    echo '<span style="font-size:20pt; font-weight:bold;">' . htmlspecialchars($q['title']) . '</span>';
+    echo '</div>';
+
+    // Criteria Section (Self Evaluation example)
+    echo $criteriaInfo;
+
+    // Assign To Section
+    echo '<div style="margin-bottom:10px;">';
+    echo '<span style="font-weight:bold; color:#198754; font-size:13pt;">Assign To:</span><br><br>';
+
+    echo '<span style="font-weight:bold;">Evaluation Types:</span> ';
+    echo !empty($assignedEvalTypes) ? htmlspecialchars(implode(', ', $assignedEvalTypes)) : '<i>None</i>';
+    echo '<br>';
+
+    echo '<span style="font-weight:bold;">Departments:</span> ';
+    echo !empty($assignedDepartments) ? htmlspecialchars(implode(', ', $assignedDepartments)) : '<i>None</i>';
+    echo '<br>';
+
+    echo '<span style="font-weight:bold;">Programs:</span> ';
+    echo !empty($assignedPrograms) ? htmlspecialchars(implode(', ', $assignedPrograms)) : '<i>None</i>';
+    echo '<br>';
+
+    echo '<span style="font-weight:bold;">Curriculum:</span> ';
+    echo !empty($assignedCurriculum) ? htmlspecialchars(implode(', ', $assignedCurriculum)) : '<i>None</i>';
+    echo '<br>';
+    echo '</div>';
+
+    // Divider line
+    echo '<hr style="border:0; border-top:1px solid #bbb; margin:18px 0;">';
+
+    // Questions List
+    echo '<div style="margin-top:10px;">';
+    echo '<span style="font-weight:bold; color:#2563eb; font-size:13pt;">Questions:</span><br><br>';
+    if (!empty($questionsArr)) {
+        echo '<ol style="margin-left:20px;">';
+        foreach ($questionsArr as $qtext) {
+            echo '<li style="margin-bottom:8px;">' . htmlspecialchars($qtext) . '</li>';
+        }
+        echo '</ol>';
+    } else {
+        echo '<i>No questions listed.</i>';
+    }
+    echo '</div>';
+
+    echo '</body></html>';
+
+    $content = ob_get_clean();
+
+    header("Content-type: application/vnd.ms-word");
+    header("Content-Disposition: attachment;Filename=Questionnaire.doc");
+    echo $content;
+    exit;
+}
 
 ?>
 <!DOCTYPE html>
@@ -335,20 +494,6 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
             </button>
         </div>
     </div>
-    <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            const searchInput = document.getElementById('questionnaireSearch');
-            searchInput.setAttribute('autocomplete', 'off');
-            searchInput.addEventListener('input', function () {
-                const val = this.value.toLowerCase();
-                document.querySelectorAll('.grid > div').forEach(card => {
-                    const titleElem = card.querySelector('.title');
-                    const title = titleElem ? titleElem.textContent.toLowerCase() : '';
-                    card.style.display = title.includes(val) ? '' : 'none';
-                });
-            });
-        });
-    </script>
     <!-- Main Dashboard Content -->
     <main class="max-w-9xl mx-auto px-4 mb-10 sm:px-8 py-8">
         <!-- All Questionnaires Section -->
@@ -373,10 +518,9 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             )">
                        <span><i class="fa fa-edit"></i>&nbsp;Edit</span>
                     </button>
-
                     <!-- Title and Status -->
                     <div class="flex items-center gap-2 flex-wrap">
-                        <span class="title font-bold text-lg text-[#23492f]"><?= htmlspecialchars($q['title']) ?></span>
+                        <span class="title font-bold text-lg text-[#23492f]"><?= formatLabel($q['title']) ?></span>
                         <form method="post" class="inline" style="display:inline;">
                             <input type="hidden" name="questionnaire_id" value="<?= $q['id'] ?>">
                             <?php if (strtolower($q['status']) === 'active'): ?>
@@ -395,7 +539,7 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         </form>
                         <?php if (!empty($q['category'])): ?>
                             <span class="bg-blue-100 text-blue-800 px-2 py-0.5 rounded text-xs font-semibold ml-2">
-                                <?= htmlspecialchars($q['category']) ?>
+                                <?= formatLabel($q['category']) ?>
                             </span>
                         <?php endif; ?>
                         <span class="bg-orange-100 text-orange-800 px-2 py-0.5 rounded text-xs font-semibold ml-2">
@@ -405,7 +549,7 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
                     <!-- Description -->
                     <?php if (!empty($q['description'])): ?>
-                        <div class="text-sm text-gray-700"><?= htmlspecialchars($q['description']) ?></div>
+                        <div class="text-sm text-gray-700"><?= formatLabel($q['description']) ?></div>
                     <?php endif; ?>
 
                     <!-- Criteria/Scale -->
@@ -429,15 +573,12 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         }
                     }
                     ?>
-
-                    <div class="text-xs text-gray-400 mt-1">Created: <?= htmlspecialchars($q['created_at']) ?></div>
-
                     <?php if (!empty($questionsByQ[$q['id']])): ?>
                         <div class="mt-2 text-xs max-h-[30vh] overflow-y-auto">
                             <div class="font-semibold text-[#2563eb] mb-1 text-xs">Questions:</div>
                             <ol class="list-decimal list-inside space-y-0.5">
                                 <?php foreach ($questionsByQ[$q['id']] as $qtext): ?>
-                                    <li><?= htmlspecialchars($qtext) ?></li>
+                                    <li><?= formatLabel($qtext) ?></li>
                                 <?php endforeach; ?>
                             </ol>
                         </div>
@@ -468,7 +609,7 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <input type="checkbox" name="assign_eval_types[]" value="<?= $evalKey ?>"
                                         <?= $isChecked ? 'checked' : '' ?>
                                         onchange="this.form.submit()">
-                                    <?= $evalLabel ?>
+                                    <?= htmlspecialchars($evalLabel) ?>
                                 </label>
                             <?php endforeach; ?>
                         </form>
@@ -539,15 +680,21 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                         onchange="this.form.submit()">
                                     <?= htmlspecialchars($c['curriculum_title']) ?>
                                     <?= htmlspecialchars($c['curriculum_year_start']) ?> - <?= htmlspecialchars($c['curriculum_year_end']) ?>
-                                    <?= htmlspecialchars($c['semester']) ?>
-                                    Sem
+                                    <?= htmlspecialchars($c['semester']) ?> Sem
                                 </label>
                             <?php endforeach; ?>
                         </form>
                     </div>
+        <!-- Download Word Button for this questionnaire -->
+        <form method="post" action="questionnaires.php" class="mt-2">
+            <input type="hidden" name="download_word" value="1">
+            <input type="hidden" name="questionnaire_id" value="<?= $q['id'] ?>">
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold shadow text-xs w-full">
+                <i class="fa fa-file-word mr-1"></i> Download Word
+            </button>
+        </form>
                 </div>
             <?php endforeach; ?>
-        </div>
         </section>
         <!-- Add Questionnaire Modal -->
         <div id="addModal" class="fixed inset-0 bg-black bg-opacity-30 flex items-start justify-center z-50 hidden">
@@ -612,7 +759,6 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                         <?php endforeach; ?>
                                     </select>
                                     <div class="text-xs text-gray-500 mt-1" id="criteriaOptionsHelper">
-                                        <!-- Will be filled by JS -->
                                     </div>
                                 </div>
                                 <div>
@@ -662,63 +808,75 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
         <!-- Edit Assignment Modal -->
         <div id="editModal" class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50 hidden">
             <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-10">
-                <h3 class="text-2xl font-bold mb-6 text-[#2563eb] flex items-center gap-2">
-                    <i class="fa-solid fa-pen-to-square"></i>
-                    Edit Assignment
-                </h3>
-                <form method="POST" class="flex flex-col gap-6" id="editAssignmentForm">
-                    <input type="hidden" name="edit_assignment_id" id="edit_assignment_id">
-
-                    <!-- Questionnaire -->
-                    <div>
-                        <label class="font-semibold mb-1 block" for="edit_questionnaire_id">Questionnaire <span
-                                class="text-red-500">*</span></label>
-                        <div class="text-xs text-gray-500 mb-1">Select the questionnaire to assign.</div>
-                        <select name="edit_questionnaire_id" id="edit_questionnaire_id"
-                            class="border rounded px-3 py-2 w-full" required>
-                            <option value="">Select Questionnaire</option>
-                            <?php foreach ($questionnaires as $q): ?>
-                                <option value="<?= $q['id'] ?>"><?= htmlspecialchars($q['title']) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <!-- Criteria -->
-                        <div>
-                            <label class="font-semibold mb-1 block" for="edit_criteria_id">Criteria <span
-                                    class="text-red-500">*</span></label>
-                            <div class="text-xs text-gray-500 mb-1">Choose the scale for answering the questions.</div>
-                            <select name="edit_criteria_id" id="edit_criteria_id"
-                                class="border rounded px-3 py-2 w-full" required>
-                                <option value="">Select Criteria</option>
-                                <?php foreach ($criteriaList as $c): ?>
-                                    <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?>
-                                        (<?= htmlspecialchars($c['type']) ?>)</option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <!-- Weight Percentage -->
-                        <div>
-                            <label class="font-semibold mb-1 block" for="edit_weight_percentage">Weight (%) <span
-                                    class="text-red-500">*</span></label>
-                            <div class="text-xs text-gray-500 mb-1">Assign a weight value to this questionnaire.</div>
-                            <input type="number" name="edit_weight_percentage" id="edit_weight_percentage" min="0"
-                                max="100" step="0.01" class="border rounded px-3 py-2 w-full" required>
-                        </div>
-                    </div>
-
-                    <div class="flex justify-end gap-3 mt-6">
-                        <button type="button" onclick="closeEditModal()"
-                            class="px-5 py-2 rounded bg-gray-200 hover:bg-gray-300 text-base">Cancel</button>
-                        <button type="submit"
-                            class="px-5 py-2 rounded bg-[#10b981] text-white hover:bg-[#059669] text-base">
-                            <i class="fa fa-save mr-2"></i> Save Changes
-                        </button>
-                    </div>
-                </form>
+        <h3 class="text-2xl font-bold mb-6 text-[#2563eb] flex items-center gap-2">
+            <i class="fa-solid fa-pen-to-square"></i>
+            <?= formatLabel('Edit Assignment') ?>
+        </h3>
+        <form method="POST" class="flex flex-col gap-6" id="editAssignmentForm">
+            <input type="hidden" name="edit_assignment_id" id="edit_assignment_id">
+            <!-- Questionnaire -->
+            <div>
+                <label class="font-semibold mb-1 block" for="edit_questionnaire_title"><?= formatLabel('Questionnaire') ?> <span class="text-red-500">*</span></label>
+                <div class="text-xs text-gray-500 mb-1"><?= formatLabel('Type the questionnaire to assign. Example: Self Evaluation') ?></div>
+                <input type="hidden" name="edit_questionnaire_id" id="edit_questionnaire_id">
+                <input type="text" name="edit_questionnaire_title" id="edit_questionnaire_title"
+                    class="border rounded px-3 py-2 w-full"
+                    placeholder="<?= formatLabel('Type questionnaire title') ?>"
+                    required>
             </div>
-        </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Criteria -->
+                <div>
+                    <label class="font-semibold mb-1 block" for="edit_criteria_id"><?= formatLabel('Criteria') ?> <span class="text-red-500">*</span></label>
+                    <div class="text-xs text-gray-500 mb-1"><?= formatLabel('Choose the scale for answering the questions.') ?></div>
+                    <select name="edit_criteria_id" id="edit_criteria_id"
+                        class="border rounded px-3 py-2 w-full" required>
+                        <option value=""><?= formatLabel('Select Criteria') ?></option>
+                        <?php foreach ($criteriaList as $c): ?>
+                            <?php
+                            $optStmt = $conn->prepare("SELECT option_text FROM criteria_options WHERE criteria_id = ? ORDER BY option_order ASC, id ASC");
+                            $optStmt->execute([$c['id']]);
+                            $option_texts = [];
+                            while ($optRow = $optStmt->fetch(PDO::FETCH_ASSOC)) {
+                                $option_texts[] = $optRow['option_text'];
+                            }
+                            $option_preview = implode(', ', $option_texts);
+                            ?>
+                            <option value="<?= $c['id'] ?>">
+                                <?= formatLabel($c['name']) ?> (<?= formatLabel($c['type']) ?>)
+                                <?= $option_preview ? ' - ' . formatLabel($option_preview) : '' ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <!-- Weight Percentage -->
+                <div>
+                    <label class="font-semibold mb-1 block" for="edit_weight_percentage"><?= formatLabel('Weight (%)') ?> <span class="text-red-500">*</span></label>
+                    <div class="text-xs text-gray-500 mb-1"><?= formatLabel('Assign a weight value to this questionnaire.') ?></div>
+                    <input type="number" name="edit_weight_percentage" id="edit_weight_percentage" min="0"
+                        max="100" step="0.01" class="border rounded px-3 py-2 w-full" required>
+                </div>
+            </div>
+            <!-- Questions -->
+            <div>
+                <label for="edit_questions" class="font-semibold mb-1 block"><?= formatLabel('Questions') ?> <span class="text-red-500">*</span></label>
+                <div class="text-xs text-gray-500 mb-1">
+                    <?= formatLabel('Edit, add, or remove questions below. Each question should be on a separate line.') ?>
+                </div>
+                <textarea name="edit_questions" id="edit_questions" rows="6" class="border rounded px-3 py-2 w-full" required></textarea>
+            </div>
+            <div class="flex justify-end gap-3 mt-6">
+                <button type="button" onclick="closeEditModal()"
+                    class="px-5 py-2 rounded bg-gray-200 hover:bg-gray-300 text-base"><?= formatLabel('Cancel') ?></button>
+                <button type="submit"
+                    class="px-5 py-2 rounded bg-[#10b981] text-white hover:bg-[#059669] text-base">
+                    <i class="fa fa-save mr-2"></i> <?= formatLabel('Save Changes') ?>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+        
 
         <script>
             // Modal open/close logic
@@ -733,14 +891,43 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
             // Edit Assignment Modal logic
             function openEditModal(id, questionnaire_id, department_id, program_id, evaluation_type, criteria_id, weight_percentage) {
                 document.getElementById('editModal').classList.remove('hidden');
-                document.getElementById('editAssignmentForm').edit_assignment_id.value = id;
-                document.getElementById('editAssignmentForm').edit_questionnaire_id.value = questionnaire_id || '';
-                document.getElementById('editAssignmentForm').edit_department_id.value = department_id || '';
-                document.getElementById('editAssignmentForm').edit_program_id.value = program_id || '';
-                document.getElementById('editAssignmentForm').edit_evaluation_type.value = evaluation_type || '';
-                document.getElementById('editAssignmentForm').edit_criteria_id.value = criteria_id || '';
-                document.getElementById('editAssignmentForm').edit_weight_percentage.value = weight_percentage || '';
-                setTimeout(toggleEditProgramDropdown, 10);
+                document.getElementById('edit_assignment_id').value = id;
+                document.getElementById('edit_questionnaire_id').value = questionnaire_id || '';
+
+                // Pre-fill Questionnaire Title
+                var questionnaireTitles = <?php
+                    $titles = [];
+                    foreach ($questionnaires as $q) {
+                        $titles[$q['id']] = $q['title'];
+                    }
+                    echo json_encode($titles);
+                ?>;
+                document.getElementById('edit_questionnaire_title').value = questionnaireTitles[String(questionnaire_id)] || '';
+
+                // Pre-fill Criteria
+                var questionnaireCriteria = <?php
+                    $criteriaMap = [];
+                    foreach ($questionnaires as $q) {
+                        $criteriaMap[$q['id']] = $q['criteria_id'];
+                    }
+                    echo json_encode($criteriaMap);
+                ?>;
+                document.getElementById('edit_criteria_id').value = questionnaireCriteria[String(questionnaire_id)] || '';
+
+                // Pre-fill Weight
+                var questionnaireWeights = <?php
+                    $weights = [];
+                    foreach ($questionnaires as $q) {
+                        $weights[$q['id']] = $q['weight_percentage'];
+                    }
+                    echo json_encode($weights);
+                ?>;
+                document.getElementById('edit_weight_percentage').value = questionnaireWeights[String(questionnaire_id)] || '';
+
+                // Pre-fill Questions
+                var questions = <?php echo json_encode($questionsByQ); ?>;
+                var qArr = questions[String(questionnaire_id)] || [];
+                document.getElementById('edit_questions').value = qArr.join('\n');
             }
             function closeEditModal() {
                 document.getElementById('editModal').classList.add('hidden');
@@ -750,6 +937,36 @@ $adminAssignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
             // Close modals on background click
             document.addEventListener('click', function (e) {
                 if (e.target.id === 'addModal') closeAddModal();
+                if (e.target.id === 'editModal') closeEditModal();
+            });
+
+            // Modal open/close logic
+            function openEditAssignmentModal(assignmentId, questionnaireId, criteriaId, weight, departmentId, programId) {
+                document.getElementById('editModal').classList.remove('hidden');
+                document.getElementById('edit_assignment_id').value = assignmentId;
+                document.getElementById('edit_questionnaire_id').value = questionnaireId;
+                document.getElementById('edit_criteria_id').value = criteriaId;
+                document.getElementById('edit_weight_percentage').value = weight;
+
+                // Set questions textarea
+                var questionsByQ = <?php echo json_encode($questionsByQ); ?>;
+                var qArr = questionsByQ[String(questionnaireId)] || [];
+                document.getElementById('edit_questions').value = qArr.join('\n');
+            }
+            function closeEditModal() {
+                document.getElementById('editModal').classList.add('hidden');
+                document.getElementById('editAssignmentForm').reset();
+            }
+
+            // Update questions when questionnaire changes
+            function showExistingQuestions(qid) {
+                var questions = <?php echo json_encode($questionsByQ); ?>;
+                var qArr = questions[String(qid)] || [];
+                document.getElementById('edit_questions').value = qArr.join('\n');
+            }
+
+            // Close modal on background click
+            document.addEventListener('click', function (e) {
                 if (e.target.id === 'editModal') closeEditModal();
             });
         </script>
